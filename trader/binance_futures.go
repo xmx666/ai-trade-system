@@ -27,14 +27,41 @@ type FuturesTrader struct {
 
 	// 缓存有效期（15秒）
 	cacheDuration time.Duration
+
+	// 时间偏移（毫秒），用于补偿Docker环境时间偏差
+	timeOffset int64
 }
 
 // NewFuturesTrader 创建合约交易器
 func NewFuturesTrader(apiKey, secretKey string) *FuturesTrader {
 	client := futures.NewClient(apiKey, secretKey)
+	
+	// 检测Binance服务器时间偏移，用于日志记录和问题诊断
+	// 注意：go-binance库不支持SetTimeOffset或RecvWindow设置
+	// 如果遇到时间偏差错误（-1021），需要：
+	// 1. 确保Docker容器时间同步（docker-compose.yml已配置）
+	// 2. 确保宿主机时间准确（使用NTP同步）
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	var timeOffset int64 = 0
+	serverTime, err := client.NewServerTimeService().Do(ctx)
+	if err == nil {
+		localTime := time.Now().Unix() * 1000
+		timeOffset = serverTime - localTime
+		log.Printf("✓ Binance时间偏移检测: %d ms (服务器时间: %d, 本地时间: %d)", 
+			timeOffset, serverTime, localTime)
+		if timeOffset > 5000 || timeOffset < -5000 {
+			log.Printf("⚠ 警告：时间偏差较大（%d ms），可能触发-1021错误。建议同步系统时间。", timeOffset)
+		}
+	} else {
+		log.Printf("⚠ 获取Binance服务器时间失败: %v", err)
+	}
+	
 	return &FuturesTrader{
 		client:        client,
 		cacheDuration: 15 * time.Second, // 15秒缓存
+		timeOffset:    timeOffset,
 	}
 }
 

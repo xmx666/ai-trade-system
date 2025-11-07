@@ -128,6 +128,12 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
 
   const handleCreateTrader = async (data: CreateTraderRequest) => {
     try {
+      // 验证必填字段
+      if (!data.name || !data.ai_model_id || !data.exchange_id) {
+        alert('请填写所有必填字段：交易员名称、AI模型、交易所');
+        return;
+      }
+
       const model = allModels?.find(m => m.id === data.ai_model_id);
       const exchange = allExchanges?.find(e => e.id === data.exchange_id);
 
@@ -146,7 +152,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       mutateTraders();
     } catch (error) {
       console.error('Failed to create trader:', error);
-      alert(t('createTraderFailed', language));
+      const errorMessage = error instanceof Error ? error.message : t('createTraderFailed', language);
+      alert(errorMessage);
     }
   };
 

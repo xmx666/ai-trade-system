@@ -45,7 +45,11 @@ export const api = {
       headers: getAuthHeaders(),
       body: JSON.stringify(request),
     });
-    if (!res.ok) throw new Error('创建交易员失败');
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      const errorMessage = errorData.error || `创建交易员失败 (HTTP ${res.status})`;
+      throw new Error(errorMessage);
+    }
     return res.json();
   },
 

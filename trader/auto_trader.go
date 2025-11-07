@@ -615,7 +615,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 		}
 	}
 
-	// 获取当前价格
+	// 获取当前价格（用于计算数量）
 	marketData, err := market.Get(decision.Symbol)
 	if err != nil {
 		return err
@@ -624,7 +624,13 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	// 计算数量
 	quantity := decision.PositionSizeUSD / marketData.CurrentPrice
 	actionRecord.Quantity = quantity
-	actionRecord.Price = marketData.CurrentPrice
+
+	// 验证订单名义价值（币安要求 >= 20 USDT）
+	const minOrderNotional = 20.0
+	orderNotional := decision.PositionSizeUSD
+	if orderNotional < minOrderNotional {
+		return fmt.Errorf("订单名义价值 %.2f USDT 小于币安最小限制 %.0f USDT，无法开仓。请增加仓位大小", orderNotional, minOrderNotional)
+	}
 
 	// 设置仓位模式
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
@@ -644,6 +650,32 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	}
 
 	log.Printf("  ✓ 开仓成功，订单ID: %v, 数量: %.4f", order["orderId"], quantity)
+
+	// ⚠️ 关键：开仓后立即从持仓信息获取实际入场价格（entryPrice）
+	// 等待一小段时间确保订单已成交
+	time.Sleep(500 * time.Millisecond)
+	positions, err = at.trader.GetPositions()
+	if err == nil {
+		for _, pos := range positions {
+			if pos["symbol"] == decision.Symbol && pos["side"] == "long" {
+				if entryPrice, ok := pos["entryPrice"].(float64); ok && entryPrice > 0 {
+					actionRecord.Price = entryPrice
+					// 更新实际数量（可能因为精度问题略有差异）
+					if posAmt, ok := pos["positionAmt"].(float64); ok && posAmt > 0 {
+						actionRecord.Quantity = posAmt
+					}
+					log.Printf("  📊 实际入场价格: %.4f, 实际数量: %.4f", entryPrice, actionRecord.Quantity)
+					break
+				}
+			}
+		}
+	}
+
+	// 如果无法从持仓获取，使用市场价格作为备选
+	if actionRecord.Price == 0 {
+		actionRecord.Price = marketData.CurrentPrice
+		log.Printf("  ⚠️ 无法获取实际入场价格，使用市场价格: %.4f", marketData.CurrentPrice)
+	}
 
 	// 记录开仓时间
 	posKey := decision.Symbol + "_long"
@@ -674,7 +706,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 		}
 	}
 
-	// 获取当前价格
+	// 获取当前价格（用于计算数量）
 	marketData, err := market.Get(decision.Symbol)
 	if err != nil {
 		return err
@@ -683,7 +715,13 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	// 计算数量
 	quantity := decision.PositionSizeUSD / marketData.CurrentPrice
 	actionRecord.Quantity = quantity
-	actionRecord.Price = marketData.CurrentPrice
+
+	// 验证订单名义价值（币安要求 >= 20 USDT）
+	const minOrderNotional = 20.0
+	orderNotional := decision.PositionSizeUSD
+	if orderNotional < minOrderNotional {
+		return fmt.Errorf("订单名义价值 %.2f USDT 小于币安最小限制 %.0f USDT，无法开仓。请增加仓位大小", orderNotional, minOrderNotional)
+	}
 
 	// 设置仓位模式
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
@@ -703,6 +741,32 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	}
 
 	log.Printf("  ✓ 开仓成功，订单ID: %v, 数量: %.4f", order["orderId"], quantity)
+
+	// ⚠️ 关键：开仓后立即从持仓信息获取实际入场价格（entryPrice）
+	// 等待一小段时间确保订单已成交
+	time.Sleep(500 * time.Millisecond)
+	positions, err = at.trader.GetPositions()
+	if err == nil {
+		for _, pos := range positions {
+			if pos["symbol"] == decision.Symbol && pos["side"] == "short" {
+				if entryPrice, ok := pos["entryPrice"].(float64); ok && entryPrice > 0 {
+					actionRecord.Price = entryPrice
+					// 更新实际数量（可能因为精度问题略有差异）
+					if posAmt, ok := pos["positionAmt"].(float64); ok && posAmt > 0 {
+						actionRecord.Quantity = posAmt
+					}
+					log.Printf("  📊 实际入场价格: %.4f, 实际数量: %.4f", entryPrice, actionRecord.Quantity)
+					break
+				}
+			}
+		}
+	}
+
+	// 如果无法从持仓获取，使用市场价格作为备选
+	if actionRecord.Price == 0 {
+		actionRecord.Price = marketData.CurrentPrice
+		log.Printf("  ⚠️ 无法获取实际入场价格，使用市场价格: %.4f", marketData.CurrentPrice)
+	}
 
 	// 记录开仓时间
 	posKey := decision.Symbol + "_short"
@@ -741,6 +805,11 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *decision.Decision, ac
 		actionRecord.OrderID = orderID
 	}
 
+	// 取消所有挂单
+	if err := at.trader.CancelAllOrders(decision.Symbol); err != nil {
+		log.Printf("  ⚠ 取消挂单失败: %v", err)
+	}
+
 	log.Printf("  ✓ 平仓成功")
 	return nil
 }
@@ -765,6 +834,11 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *decision.Decision, a
 	// 记录订单ID
 	if orderID, ok := order["orderId"].(int64); ok {
 		actionRecord.OrderID = orderID
+	}
+
+	// 取消所有挂单
+	if err := at.trader.CancelAllOrders(decision.Symbol); err != nil {
+		log.Printf("  ⚠ 取消挂单失败: %v", err)
 	}
 
 	log.Printf("  ✓ 平仓成功")

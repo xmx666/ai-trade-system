@@ -267,17 +267,32 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	var req CreateTraderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		log.Printf("❌ 创建交易员请求解析失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("请求数据格式错误: %v", err)})
 		return
 	}
 
-	// 校验杠杆值
+	// 验证必填字段
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "交易员名称不能为空"})
+		return
+	}
+	if req.AIModelID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "AI模型ID不能为空"})
+		return
+	}
+	if req.ExchangeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "交易所ID不能为空"})
+		return
+	}
+
+	// 校验杠杆值（允许0，表示使用默认值）
 	if req.BTCETHLeverage < 0 || req.BTCETHLeverage > 50 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "BTC/ETH杠杆必须在1-50倍之间"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("BTC/ETH杠杆必须在0-50倍之间（0表示使用默认值），当前值: %d", req.BTCETHLeverage)})
 		return
 	}
 	if req.AltcoinLeverage < 0 || req.AltcoinLeverage > 20 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "山寨币杠杆必须在1-20倍之间"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("山寨币杠杆必须在0-20倍之间（0表示使用默认值），当前值: %d", req.AltcoinLeverage)})
 		return
 	}
 
@@ -351,6 +366,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		TradingSymbols:       req.TradingSymbols,
 		UseCoinPool:          req.UseCoinPool,
 		UseOITop:             req.UseOITop,
+		UseInsideCoins:       false, // 默认不使用内置评分信号源
 		CustomPrompt:         req.CustomPrompt,
 		OverrideBasePrompt:   req.OverrideBasePrompt,
 		SystemPromptTemplate: systemPromptTemplate,
@@ -362,7 +378,20 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 	// 保存到数据库
 	err := s.database.CreateTrader(trader)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("创建交易员失败: %v", err)})
+		log.Printf("❌ 创建交易员到数据库失败: %v", err)
+		// 检查是否是外键约束错误
+		errStr := err.Error()
+		if strings.Contains(errStr, "FOREIGN KEY constraint failed") || strings.Contains(errStr, "foreign key") {
+			if strings.Contains(errStr, "ai_model_id") || strings.Contains(errStr, "ai_models") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("AI模型不存在: %s，请先在AI模型配置中创建并启用该模型", req.AIModelID)})
+			} else if strings.Contains(errStr, "exchange_id") || strings.Contains(errStr, "exchanges") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("交易所不存在: %s，请先在交易所配置中创建并启用该交易所", req.ExchangeID)})
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("关联数据不存在，请检查AI模型和交易所配置: %v", err)})
+			}
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("创建交易员失败: %v", err)})
+		}
 		return
 	}
 

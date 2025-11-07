@@ -9,6 +9,7 @@
 ARG GO_VERSION=1.25-alpine
 ARG ALPINE_VERSION=latest
 ARG TA_LIB_VERSION=0.4.0
+ARG GOPROXY=https://goproxy.cn,direct,https://proxy.golang.org
 
 # ──────────────────────────────────────────────────────────────
 # TA-Lib Build Stage (shared across builds)
@@ -37,6 +38,14 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.
 # Backend Build Stage (Go Application)
 # ──────────────────────────────────────────────────────────────
 FROM golang:${GO_VERSION} AS backend-builder
+
+# 配置 Go 代理（使用多个镜像源，提高下载成功率）
+# 优先使用 goproxy.cn（国内镜像），如果失败则尝试 direct 和官方代理
+# 可以通过构建参数自定义：docker build --build-arg GOPROXY=...
+ARG GOPROXY=https://goproxy.cn,direct,https://proxy.golang.org
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=sum.golang.google.cn
+ENV GOPRIVATE=
 
 RUN apk update && apk add --no-cache git make gcc g++ musl-dev
 

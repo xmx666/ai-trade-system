@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
+	"os"
 	"sync"
 	"time"
 
@@ -79,6 +82,17 @@ func NewWSClient() *WSClient {
 func (w *WSClient) Connect() error {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
+	}
+
+	// 配置代理支持（从环境变量读取）
+	if proxyURL := os.Getenv("HTTP_PROXY"); proxyURL != "" {
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			log.Printf("⚠️ 解析代理URL失败: %v, 使用直连", err)
+		} else {
+			dialer.Proxy = http.ProxyURL(proxy)
+			log.Printf("🌐 使用代理连接WebSocket: %s", proxyURL)
+		}
 	}
 
 	conn, _, err := dialer.Dial("wss://ws-fapi.binance.com/ws-fapi/v1", nil)

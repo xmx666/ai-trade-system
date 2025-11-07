@@ -366,16 +366,102 @@ func buildUserPrompt(ctx *Context) string {
 	}
 	sb.WriteString("\n")
 
-	// 夏普比率（直接传值，不要复杂格式化）
+	// 历史表现分析（包括夏普比率和已完成交易详情）
 	if ctx.Performance != nil {
-		// 直接从interface{}中提取SharpeRatio
+		// 提取PerformanceAnalysis数据
 		type PerformanceData struct {
-			SharpeRatio float64 `json:"sharpe_ratio"`
+			SharpeRatio  float64 `json:"sharpe_ratio"`
+			RecentTrades []struct {
+				Symbol        string    `json:"symbol"`
+				Side          string    `json:"side"`
+				OpenPrice     float64   `json:"open_price"`
+				ClosePrice    float64   `json:"close_price"`
+				PnL           float64   `json:"pn_l"`
+				PnLPct        float64   `json:"pn_l_pct"`
+				Duration      string    `json:"duration"`
+				PositionValue float64   `json:"position_value"`
+				MarginUsed    float64   `json:"margin_used"`
+				Leverage      int       `json:"leverage"`
+				OpenTime      time.Time `json:"open_time"`
+				CloseTime     time.Time `json:"close_time"`
+				WasStopLoss   bool     `json:"was_stop_loss"`
+			} `json:"recent_trades"`
+			TotalTrades   int     `json:"total_trades"`
+			WinningTrades  int     `json:"winning_trades"`
+			LosingTrades   int     `json:"losing_trades"`
+			WinRate        float64 `json:"win_rate"`
+			AvgWin         float64 `json:"avg_win"`
+			AvgLoss        float64 `json:"avg_loss"`
+			ProfitFactor   float64 `json:"profit_factor"`
 		}
 		var perfData PerformanceData
 		if jsonData, err := json.Marshal(ctx.Performance); err == nil {
 			if err := json.Unmarshal(jsonData, &perfData); err == nil {
-				sb.WriteString(fmt.Sprintf("## 📊 夏普比率: %.2f\n\n", perfData.SharpeRatio))
+				// 显示夏普比率
+				sb.WriteString(fmt.Sprintf("## 📊 历史表现统计\n\n"))
+				sb.WriteString(fmt.Sprintf("**夏普比率**: %.2f\n", perfData.SharpeRatio))
+				sb.WriteString(fmt.Sprintf("**总交易数**: %d | **胜率**: %.1f%% | **盈亏比**: %.2f\n", 
+					perfData.TotalTrades, perfData.WinRate, perfData.ProfitFactor))
+				sb.WriteString(fmt.Sprintf("**平均盈利**: %.2f USDT | **平均亏损**: %.2f USDT\n\n", 
+					perfData.AvgWin, perfData.AvgLoss))
+
+				// 显示最近完成的交易详情
+				if len(perfData.RecentTrades) > 0 {
+					sb.WriteString("## 📈 最近完成的交易详情（最近10笔）\n\n")
+					sb.WriteString("| 币种 | 方向 | 开仓价 | 平仓价 | 总盈亏 | 净盈亏 | 盈亏% | 手续费 | 持仓时长 | 杠杆 | 止损 |\n")
+					sb.WriteString("|------|------|--------|--------|--------|--------|-------|--------|----------|------|------|\n")
+					
+					for _, trade := range perfData.RecentTrades {
+						// 计算手续费（开仓0.04% + 平仓0.04% = 0.08%）
+						// 手续费基于仓位价值（quantity × openPrice）计算
+						fee := trade.PositionValue * 0.0008
+						// 计算净盈亏（扣除手续费）
+						netPnL := trade.PnL - fee
+						
+						// 格式化持仓时长（简化显示）
+						duration := trade.Duration
+						// 如果时长字符串太长，截断（保留前20个字符）
+						if len(duration) > 20 {
+							duration = duration[:20] + "..."
+						}
+						
+						// 盈亏标记
+						pnlSymbol := "✅"
+						if trade.PnL < 0 {
+							pnlSymbol = "❌"
+						} else if trade.PnL == 0 {
+							pnlSymbol = "➖"
+						}
+						
+						stopLossMark := "否"
+						if trade.WasStopLoss {
+							stopLossMark = "是"
+						}
+						
+						sb.WriteString(fmt.Sprintf("| %s | %s | %.4f | %.4f | %s%.2f | %.2f | %.2f%% | %.4f | %s | %dx | %s |\n",
+							trade.Symbol,
+							strings.ToUpper(trade.Side),
+							trade.OpenPrice,
+							trade.ClosePrice,
+							pnlSymbol,
+							trade.PnL,
+							netPnL,
+							trade.PnLPct,
+							fee,
+							duration,
+							trade.Leverage,
+							stopLossMark))
+					}
+					sb.WriteString("\n")
+					sb.WriteString("**交易详情说明**:\n")
+					sb.WriteString("- **总盈亏**: 交易产生的总盈亏（未扣除手续费）\n")
+					sb.WriteString("- **净盈亏**: 扣除手续费后的实际盈亏（总盈亏 - 手续费）\n")
+					sb.WriteString("- **盈亏%**: 相对保证金的盈亏百分比\n")
+					sb.WriteString("- **手续费**: 开仓0.04% + 平仓0.04% = 0.08% × 仓位价值（开仓价 × 数量）\n")
+					sb.WriteString("- **持仓时长**: 从开仓到平仓的时间\n")
+					sb.WriteString("- **止损**: 是否因触发止损而平仓\n")
+					sb.WriteString("- ✅ 盈利 | ❌ 亏损 | ➖ 持平\n\n")
+				}
 			}
 		}
 	}
@@ -531,6 +617,11 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 		}
 		if d.PositionSizeUSD <= 0 {
 			return fmt.Errorf("仓位大小必须大于0: %.2f", d.PositionSizeUSD)
+		}
+		// 验证最小订单金额（币安要求订单名义价值 >= 20 USDT）
+		const minOrderNotional = 20.0
+		if d.PositionSizeUSD < minOrderNotional {
+			return fmt.Errorf("订单名义价值必须 >= %.0f USDT（币安最小限制），实际: %.2f USDT。请增加仓位大小或选择其他币种", minOrderNotional, d.PositionSizeUSD)
 		}
 		// 验证仓位价值上限（加1%容差以避免浮点数精度问题）
 		tolerance := maxPositionValue * 0.01 // 1%容差

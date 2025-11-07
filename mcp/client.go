@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,7 +37,7 @@ func New() *Client {
 		Provider: ProviderDeepSeek,
 		BaseURL:  "https://api.deepseek.com/v1",
 		Model:    "deepseek-chat",
-		Timeout:  120 * time.Second, // 增加到120秒，因为AI需要分析大量数据
+		Timeout:  180 * time.Second, // 增加到180秒，因为AI需要分析大量数据，SiliconFlow等API可能响应较慢
 	}
 }
 
@@ -105,13 +106,13 @@ func (client *Client) SetCustomAPI(apiURL, apiKey, modelName string) {
 	}
 
 	client.Model = modelName
-	client.Timeout = 120 * time.Second
+	client.Timeout = 180 * time.Second // 增加到180秒，SiliconFlow等API可能响应较慢
 }
 
 // SetClient 设置完整的AI配置（高级用户）
 func (client *Client) SetClient(Client Client) {
 	if Client.Timeout == 0 {
-		Client.Timeout = 30 * time.Second
+		Client.Timeout = 180 * time.Second // 默认180秒，SiliconFlow等API可能响应较慢
 	}
 	client = &Client
 }
@@ -231,10 +232,18 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
 	}
 
-	// 发送请求
+	// 发送请求（使用context控制超时）
+	ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
+	defer cancel()
+	
+	req = req.WithContext(ctx)
 	httpClient := &http.Client{Timeout: client.Timeout}
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		// 检查是否是超时错误
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("发送请求失败: 请求超时（%v）: %w", client.Timeout, err)
+		}
 		return "", fmt.Errorf("发送请求失败: %w", err)
 	}
 	defer resp.Body.Close()
@@ -276,13 +285,17 @@ func isRetryableError(err error) bool {
 	retryableErrors := []string{
 		"EOF",
 		"timeout",
+		"Timeout",
+		"deadline exceeded",
+		"context deadline",
 		"connection reset",
 		"connection refused",
 		"temporary failure",
 		"no such host",
+		"i/o timeout",
 	}
 	for _, retryable := range retryableErrors {
-		if strings.Contains(errStr, retryable) {
+		if strings.Contains(strings.ToLower(errStr), strings.ToLower(retryable)) {
 			return true
 		}
 	}

@@ -16,6 +16,10 @@ services:
       - /etc/localtime:/etc/localtime:ro  # Sync host time
     environment:
       - TZ=${NOFX_TIMEZONE:-Asia/Shanghai}  # Set timezone
+      #代理配置（如果使用VPN代理，取消下面的注释并设置代理地址）
+      - HTTP_PROXY=${HTTP_PROXY}
+      - HTTPS_PROXY=${HTTPS_PROXY}
+      - NO_PROXY=localhost,127.0.0.1,nofx,nofx-frontend,172.21.0.0/16
     networks:
       - nofx-network
     healthcheck:
