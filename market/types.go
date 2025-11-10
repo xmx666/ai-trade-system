@@ -14,6 +14,7 @@ type Data struct {
 	OpenInterest      *OIData
 	FundingRate       float64
 	IntradaySeries    *IntradayData
+	HourlyContext     *HourlyData // 1小时时间框架数据
 	LongerTermContext *LongerTermData
 }
 
@@ -30,6 +31,18 @@ type IntradayData struct {
 	MACDValues  []float64
 	RSI7Values  []float64
 	RSI14Values []float64
+}
+
+// HourlyData 1小时时间框架数据
+type HourlyData struct {
+	EMA20         float64
+	EMA50         float64
+	ATR3          float64
+	ATR14         float64
+	CurrentVolume float64
+	AverageVolume float64
+	MACDValues    []float64
+	RSI14Values   []float64
 }
 
 // LongerTermData 长期数据(4小时时间框架)

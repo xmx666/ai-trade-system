@@ -12,7 +12,7 @@ import (
 
 // Get 获取指定代币的市场数据
 func Get(symbol string) (*Data, error) {
-	var klines3m, klines4h []Kline
+	var klines3m, klines1h, klines4h []Kline
 	var err error
 	// 标准化symbol
 	symbol = Normalize(symbol)
@@ -20,6 +20,12 @@ func Get(symbol string) (*Data, error) {
 	klines3m, err = WSMonitorCli.GetCurrentKlines(symbol, "3m") // 多获取一些用于计算
 	if err != nil {
 		return nil, fmt.Errorf("获取3分钟K线失败: %v", err)
+	}
+
+	// 获取1小时K线数据 (最近10个)
+	klines1h, err = WSMonitorCli.GetCurrentKlines(symbol, "1h") // 多获取用于计算指标
+	if err != nil {
+		return nil, fmt.Errorf("获取1小时K线失败: %v", err)
 	}
 
 	// 获取4小时K线数据 (最近10个)
@@ -66,6 +72,9 @@ func Get(symbol string) (*Data, error) {
 	// 计算日内系列数据
 	intradayData := calculateIntradaySeries(klines3m)
 
+	// 计算1小时数据
+	hourlyData := calculateHourlyData(klines1h)
+
 	// 计算长期数据
 	longerTermData := calculateLongerTermData(klines4h)
 
@@ -80,6 +89,7 @@ func Get(symbol string) (*Data, error) {
 		OpenInterest:      oiData,
 		FundingRate:       fundingRate,
 		IntradaySeries:    intradayData,
+		HourlyContext:     hourlyData,
 		LongerTermContext: longerTermData,
 	}, nil
 }
@@ -243,6 +253,52 @@ func calculateIntradaySeries(klines []Kline) *IntradayData {
 	return data
 }
 
+// calculateHourlyData 计算1小时数据
+func calculateHourlyData(klines []Kline) *HourlyData {
+	data := &HourlyData{
+		MACDValues:  make([]float64, 0, 10),
+		RSI14Values: make([]float64, 0, 10),
+	}
+
+	// 计算EMA
+	data.EMA20 = calculateEMA(klines, 20)
+	data.EMA50 = calculateEMA(klines, 50)
+
+	// 计算ATR
+	data.ATR3 = calculateATR(klines, 3)
+	data.ATR14 = calculateATR(klines, 14)
+
+	// 计算成交量
+	if len(klines) > 0 {
+		data.CurrentVolume = klines[len(klines)-1].Volume
+		// 计算平均成交量
+		sum := 0.0
+		for _, k := range klines {
+			sum += k.Volume
+		}
+		data.AverageVolume = sum / float64(len(klines))
+	}
+
+	// 计算MACD和RSI序列
+	start := len(klines) - 10
+	if start < 0 {
+		start = 0
+	}
+
+	for i := start; i < len(klines); i++ {
+		if i >= 25 {
+			macd := calculateMACD(klines[:i+1])
+			data.MACDValues = append(data.MACDValues, macd)
+		}
+		if i >= 14 {
+			rsi14 := calculateRSI(klines[:i+1], 14)
+			data.RSI14Values = append(data.RSI14Values, rsi14)
+		}
+	}
+
+	return data
+}
+
 // calculateLongerTermData 计算长期数据
 func calculateLongerTermData(klines []Kline) *LongerTermData {
 	data := &LongerTermData{
@@ -393,6 +449,27 @@ func Format(data *Data) string {
 
 		if len(data.IntradaySeries.RSI14Values) > 0 {
 			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.IntradaySeries.RSI14Values)))
+		}
+	}
+
+	if data.HourlyContext != nil {
+		sb.WriteString("Hourly context (1‑hour timeframe):\n\n")
+
+		sb.WriteString(fmt.Sprintf("20‑Period EMA: %.3f vs. 50‑Period EMA: %.3f\n\n",
+			data.HourlyContext.EMA20, data.HourlyContext.EMA50))
+
+		sb.WriteString(fmt.Sprintf("3‑Period ATR: %.3f vs. 14‑Period ATR: %.3f\n\n",
+			data.HourlyContext.ATR3, data.HourlyContext.ATR14))
+
+		sb.WriteString(fmt.Sprintf("Current Volume: %.3f vs. Average Volume: %.3f\n\n",
+			data.HourlyContext.CurrentVolume, data.HourlyContext.AverageVolume))
+
+		if len(data.HourlyContext.MACDValues) > 0 {
+			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.HourlyContext.MACDValues)))
+		}
+
+		if len(data.HourlyContext.RSI14Values) > 0 {
+			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.HourlyContext.RSI14Values)))
 		}
 	}
 
