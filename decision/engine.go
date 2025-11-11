@@ -264,8 +264,14 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("# 硬约束（风险控制）\n\n")
 	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
 	sb.WriteString("2. 最多持仓: 3个币种（质量>数量）\n")
-	sb.WriteString(fmt.Sprintf("3. 单币仓位建议: 山寨%.0f-%.0f U(%dx杠杆) | BTC/ETH %.0f-%.0f U(%dx杠杆)（在更好的机会时可以增加仓位，争取更大收益）\n",
-		accountEquity*0.8, accountEquity*1.5, altcoinLeverage, accountEquity*5, accountEquity*10, btcEthLeverage))
+	sb.WriteString(fmt.Sprintf("3. 仓位控制（基于当前余额百分比）:\n"))
+	sb.WriteString(fmt.Sprintf("   - 当前账户余额: %.2f USDT\n", accountEquity))
+	sb.WriteString("   - **每笔操作使用仓位 ≥ 20%**（硬约束，必须遵守）\n")
+	sb.WriteString("   - 标准机会：使用20-30%的余额\n")
+	sb.WriteString("   - A级机会：使用30-50%的余额\n")
+	sb.WriteString("   - 优质机会（趋势非常明确 + 多周期一致 + 盈亏比≥3:1 + 盈利空间>15%）：可以使用50-70%的余额\n")
+	sb.WriteString("   - **最小订单金额（硬约束）**：订单名义价值（position_size_usd）必须 ≥ **20 USDT**（币安最小限制）\n")
+	sb.WriteString("   - 如果计算出的仓位金额 < 20 USDT，必须至少使用20 USDT（但建议使用更大的百分比）\n")
 	sb.WriteString("4. 保证金: 总使用率 ≤ 90%\n")
 	sb.WriteString("5. 在更好的机会时，要勇于增加仓位，不要被仓位限制束缚，争取更大收益\n\n")
 
