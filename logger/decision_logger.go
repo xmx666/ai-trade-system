@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -278,8 +279,11 @@ type TradeOutcome struct {
 	ClosePrice    float64   `json:"close_price"`    // 平仓价
 	PositionValue float64   `json:"position_value"` // 仓位价值（quantity × openPrice）
 	MarginUsed    float64   `json:"margin_used"`    // 保证金使用（positionValue / leverage）
-	PnL           float64   `json:"pn_l"`           // 盈亏（USDT）
+	PnL           float64   `json:"pn_l"`           // 毛盈亏（USDT，未扣除手续费）
 	PnLPct        float64   `json:"pn_l_pct"`       // 盈亏百分比（相对保证金）
+	Fee           float64   `json:"fee"`            // 手续费（USDT，开仓0.04% + 平仓0.04% = 0.08%）
+	NetPnL        float64   `json:"net_pn_l"`       // 净盈亏（USDT，扣除手续费后）
+	NetPnLPct     float64   `json:"net_pn_l_pct"`  // 净盈亏百分比（相对保证金）
 	Duration      string    `json:"duration"`       // 持仓时长
 	OpenTime      time.Time `json:"open_time"`      // 开仓时间
 	CloseTime     time.Time `json:"close_time"`     // 平仓时间
@@ -427,6 +431,17 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 						pnlPct = (pnl / marginUsed) * 100
 					}
 
+					// 计算手续费（币安U本位合约：开仓0.04% + 平仓0.04% = 0.08%）
+					// 手续费基于仓位价值（quantity × openPrice）计算
+					fee := positionValue * 0.0008
+
+					// 计算净盈亏（扣除手续费）
+					netPnL := pnl - fee
+					netPnLPct := 0.0
+					if marginUsed > 0 {
+						netPnLPct = (netPnL / marginUsed) * 100
+					}
+
 					// 记录交易结果
 					outcome := TradeOutcome{
 						Symbol:        symbol,
@@ -437,8 +452,11 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 						ClosePrice:    action.Price,
 						PositionValue: positionValue,
 						MarginUsed:    marginUsed,
-						PnL:           pnl,
-						PnLPct:        pnlPct,
+						PnL:           pnl,           // 毛盈亏
+						PnLPct:        pnlPct,        // 毛盈亏百分比
+						Fee:           fee,           // 手续费
+						NetPnL:        netPnL,        // 净盈亏（扣除手续费）
+						NetPnLPct:     netPnLPct,     // 净盈亏百分比
 						Duration:      action.Timestamp.Sub(openTime).String(),
 						OpenTime:      openTime,
 						CloseTime:     action.Timestamp,
@@ -447,15 +465,16 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 					analysis.RecentTrades = append(analysis.RecentTrades, outcome)
 					analysis.TotalTrades++
 
-					// 分类交易：盈利、亏损、持平（避免将pnl=0算入亏损）
-					if pnl > 0 {
+					// 分类交易：盈利、亏损、持平（基于净盈亏，扣除手续费后）
+					// 使用净盈亏（NetPnL）而不是毛盈亏（PnL）进行分类
+					if netPnL > 0 {
 						analysis.WinningTrades++
-						analysis.AvgWin += pnl
-					} else if pnl < 0 {
+						analysis.AvgWin += netPnL  // 使用净盈利
+					} else if netPnL < 0 {
 						analysis.LosingTrades++
-						analysis.AvgLoss += pnl
+						analysis.AvgLoss += netPnL  // 使用净亏损
 					}
-					// pnl == 0 的交易不计入盈利也不计入亏损，但计入总交易数
+					// netPnL == 0 的交易不计入盈利也不计入亏损，但计入总交易数
 
 					// 更新币种统计
 					if _, exists := analysis.SymbolStats[symbol]; !exists {
@@ -465,17 +484,36 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 					}
 					stats := analysis.SymbolStats[symbol]
 					stats.TotalTrades++
-					stats.TotalPnL += pnl
-					if pnl > 0 {
+					stats.TotalPnL += netPnL  // 使用净盈亏
+					if netPnL > 0 {
 						stats.WinningTrades++
-					} else if pnl < 0 {
+					} else if netPnL < 0 {
 						stats.LosingTrades++
 					}
 
 					// 移除已平仓记录
 					delete(openPositions, posKey)
+				} else {
+					// 未找到匹配的开仓记录，记录警告（可能开仓记录在窗口外或丢失）
+					fmt.Printf("⚠️  警告: 平仓记录未找到匹配的开仓记录 - Symbol: %s, Side: %s, ClosePrice: %.4f, Time: %s\n",
+						symbol, side, action.Price, action.Timestamp.Format("2006-01-02 15:04:05"))
+					// 注意：这种情况下不会记录到 RecentTrades，可能导致交易记录不完整
+					// 建议：扩大 lookbackCycles 或检查历史记录是否完整
 				}
 			}
+		}
+	}
+
+	// 检查是否有未平仓的持仓（可能还在持仓中，或平仓记录丢失）
+	if len(openPositions) > 0 {
+		fmt.Printf("⚠️  警告: 发现 %d 个未匹配的开仓记录（可能还在持仓中，或平仓记录丢失）\n", len(openPositions))
+		for posKey, openPos := range openPositions {
+			symbol := strings.Split(posKey, "_")[0]
+			side := strings.Split(posKey, "_")[1]
+			openPrice := openPos["openPrice"].(float64)
+			openTime := openPos["openTime"].(time.Time)
+			fmt.Printf("  - %s %s: 开仓价 %.4f, 开仓时间: %s\n",
+				symbol, side, openPrice, openTime.Format("2006-01-02 15:04:05"))
 		}
 	}
 
@@ -523,15 +561,8 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 		}
 	}
 
-	// 只保留最近的交易（倒序：最新的在前）
-	if len(analysis.RecentTrades) > 10 {
-		// 反转数组，让最新的在前
-		for i, j := 0, len(analysis.RecentTrades)-1; i < j; i, j = i+1, j-1 {
-			analysis.RecentTrades[i], analysis.RecentTrades[j] = analysis.RecentTrades[j], analysis.RecentTrades[i]
-		}
-		analysis.RecentTrades = analysis.RecentTrades[:10]
-	} else if len(analysis.RecentTrades) > 0 {
-		// 反转数组
+	// 反转数组，让最新的交易在前（保留所有历史交易）
+	if len(analysis.RecentTrades) > 0 {
 		for i, j := 0, len(analysis.RecentTrades)-1; i < j; i, j = i+1, j-1 {
 			analysis.RecentTrades[i], analysis.RecentTrades[j] = analysis.RecentTrades[j], analysis.RecentTrades[i]
 		}
@@ -609,4 +640,57 @@ func (l *DecisionLogger) calculateSharpeRatio(records []*DecisionRecord) float64
 	// 注：直接返回周期级别的夏普比率（非年化），正常范围 -2 到 +2
 	sharpeRatio := meanReturn / stdDev
 	return sharpeRatio
+}
+
+// GetTodayTradeCount 获取今天的交易次数（开仓+平仓）
+// 注意：保留此函数以保持向后兼容，但建议使用 GetHourlyTradeCount
+func (l *DecisionLogger) GetTodayTradeCount() (int, error) {
+	return l.GetHourlyTradeCount()
+}
+
+// GetHourlyTradeCount 获取最近1小时的交易次数（开仓+平仓）
+func (l *DecisionLogger) GetHourlyTradeCount() (int, error) {
+	// 获取最近1小时的时间范围
+	now := time.Now()
+	oneHourAgo := now.Add(-1 * time.Hour)
+
+	files, err := ioutil.ReadDir(l.logDir)
+	if err != nil {
+		return 0, fmt.Errorf("读取日志目录失败: %w", err)
+	}
+
+	tradeCount := 0
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		filepath := filepath.Join(l.logDir, file.Name())
+		data, err := ioutil.ReadFile(filepath)
+		if err != nil {
+			continue
+		}
+
+		var record DecisionRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			continue
+		}
+
+		// 统计成功的开仓和平仓操作
+		// 注意：只统计成功的交易，失败的交易不计入
+		// 并且只统计最近1小时执行的交易（基于action.Timestamp）
+		for _, action := range record.Decisions {
+			if action.Success {
+				// 检查交易时间是否在最近1小时内
+				if action.Timestamp.After(oneHourAgo) && action.Timestamp.Before(now) {
+					if action.Action == "open_long" || action.Action == "open_short" ||
+						action.Action == "close_long" || action.Action == "close_short" {
+						tradeCount++
+					}
+				}
+			}
+		}
+	}
+
+	return tradeCount, nil
 }

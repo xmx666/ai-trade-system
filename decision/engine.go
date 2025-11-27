@@ -58,6 +58,8 @@ type Context struct {
 	CurrentTime     string                  `json:"current_time"`
 	RuntimeMinutes  int                     `json:"runtime_minutes"`
 	CallCount       int                     `json:"call_count"`
+	TodayTradeCount int                     `json:"today_trade_count"` // 今天的交易次数（已废弃，使用HourlyTradeCount）
+	HourlyTradeCount int                    `json:"hourly_trade_count"` // 最近1小时的交易次数
 	Account         AccountInfo             `json:"account"`
 	Positions       []PositionInfo          `json:"positions"`
 	CandidateCoins  []CandidateCoin         `json:"candidate_coins"`
@@ -263,8 +265,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	// 2. 硬约束（风险控制）- 动态生成
 	sb.WriteString("# 硬约束（风险控制）\n\n")
 	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
-	sb.WriteString("2. 最多持仓: 3个币种（质量>数量）\n")
-	sb.WriteString(fmt.Sprintf("3. 仓位控制（基于当前余额百分比）:\n"))
+	sb.WriteString(fmt.Sprintf("2. 仓位控制（基于当前余额百分比）:\n"))
 	sb.WriteString(fmt.Sprintf("   - 当前账户余额: %.2f USDT\n", accountEquity))
 	sb.WriteString("   - **每笔操作使用仓位 ≥ 20%**（硬约束，必须遵守）\n")
 	sb.WriteString("   - 标准机会：使用20-30%的余额\n")
@@ -272,8 +273,8 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("   - 优质机会（趋势非常明确 + 多周期一致 + 盈亏比≥3:1 + 盈利空间>15%）：可以使用50-70%的余额\n")
 	sb.WriteString("   - **最小订单金额（硬约束）**：订单名义价值（position_size_usd）必须 ≥ **20 USDT**（币安最小限制）\n")
 	sb.WriteString("   - 如果计算出的仓位金额 < 20 USDT，必须至少使用20 USDT（但建议使用更大的百分比）\n")
-	sb.WriteString("4. 保证金: 总使用率 ≤ 90%\n")
-	sb.WriteString("5. 在更好的机会时，要勇于增加仓位，不要被仓位限制束缚，争取更大收益\n\n")
+	sb.WriteString("3. 保证金: 总使用率 ≤ 90%\n")
+	sb.WriteString("4. 在更好的机会时，要勇于增加仓位，不要被仓位限制束缚，争取更大收益\n\n")
 
 	// 3. 输出格式 - 动态生成
 	sb.WriteString("#输出格式\n\n")
@@ -297,8 +298,13 @@ func buildUserPrompt(ctx *Context) string {
 	var sb strings.Builder
 
 	// 系统状态
-	sb.WriteString(fmt.Sprintf("时间: %s | 周期: #%d | 运行: %d分钟\n\n",
-		ctx.CurrentTime, ctx.CallCount, ctx.RuntimeMinutes))
+	// 优先使用HourlyTradeCount，如果没有则使用TodayTradeCount（向后兼容）
+	tradeCount := ctx.HourlyTradeCount
+	if tradeCount == 0 {
+		tradeCount = ctx.TodayTradeCount
+	}
+	sb.WriteString(fmt.Sprintf("时间: %s | 周期: #%d | 运行: %d分钟 | 最近1小时已交易: %d次\n\n",
+		ctx.CurrentTime, ctx.CallCount, ctx.RuntimeMinutes, tradeCount))
 
 	// BTC 市场
 	if btcData, hasBTC := ctx.MarketDataMap["BTCUSDT"]; hasBTC {
@@ -383,8 +389,11 @@ func buildUserPrompt(ctx *Context) string {
 				Side          string    `json:"side"`
 				OpenPrice     float64   `json:"open_price"`
 				ClosePrice    float64   `json:"close_price"`
-				PnL           float64   `json:"pn_l"`
-				PnLPct        float64   `json:"pn_l_pct"`
+				PnL           float64   `json:"pn_l"`           // 毛盈亏
+				PnLPct        float64   `json:"pn_l_pct"`      // 毛盈亏百分比
+				Fee           float64   `json:"fee"`           // 手续费
+				NetPnL        float64   `json:"net_pn_l"`      // 净盈亏（扣除手续费）
+				NetPnLPct     float64   `json:"net_pn_l_pct"` // 净盈亏百分比
 				Duration      string    `json:"duration"`
 				PositionValue float64   `json:"position_value"`
 				MarginUsed    float64   `json:"margin_used"`
@@ -415,15 +424,13 @@ func buildUserPrompt(ctx *Context) string {
 				// 显示最近完成的交易详情
 				if len(perfData.RecentTrades) > 0 {
 					sb.WriteString("## 📈 最近完成的交易详情（最近10笔）\n\n")
-					sb.WriteString("| 币种 | 方向 | 开仓价 | 平仓价 | 总盈亏 | 净盈亏 | 盈亏% | 手续费 | 持仓时长 | 杠杆 | 止损 |\n")
-					sb.WriteString("|------|------|--------|--------|--------|--------|-------|--------|----------|------|------|\n")
+					sb.WriteString("| 币种 | 方向 | 开仓价 | 平仓价 | 净盈亏(毛盈亏) | 净盈亏%(毛盈亏%) | 手续费 | 持仓时长 | 杠杆 | 止损 |\n")
+					sb.WriteString("|------|------|--------|--------|----------------|-----------------|--------|----------|------|------|\n")
 					
 					for _, trade := range perfData.RecentTrades {
-						// 计算手续费（开仓0.04% + 平仓0.04% = 0.08%）
-						// 手续费基于仓位价值（quantity × openPrice）计算
-						fee := trade.PositionValue * 0.0008
-						// 计算净盈亏（扣除手续费）
-						netPnL := trade.PnL - fee
+						// 使用 TradeOutcome 中已计算好的手续费和净盈亏
+						fee := trade.Fee
+						netPnL := trade.NetPnL
 						
 						// 格式化持仓时长（简化显示）
 						duration := trade.Duration
@@ -432,11 +439,11 @@ func buildUserPrompt(ctx *Context) string {
 							duration = duration[:20] + "..."
 						}
 						
-						// 盈亏标记
+						// 盈亏标记（基于净盈亏）
 						pnlSymbol := "✅"
-						if trade.PnL < 0 {
+						if trade.NetPnL < 0 {
 							pnlSymbol = "❌"
-						} else if trade.PnL == 0 {
+						} else if trade.NetPnL == 0 {
 							pnlSymbol = "➖"
 						}
 						
@@ -445,15 +452,17 @@ func buildUserPrompt(ctx *Context) string {
 							stopLossMark = "是"
 						}
 						
-						sb.WriteString(fmt.Sprintf("| %s | %s | %.4f | %.4f | %s%.2f | %.2f | %.2f%% | %.4f | %s | %dx | %s |\n",
+						// 显示净盈亏（主要）和毛盈亏（括号内）
+						sb.WriteString(fmt.Sprintf("| %s | %s | %.4f | %.4f | %s%.2f(%.2f) | %.2f%%(%.2f%%) | %.4f | %s | %dx | %s |\n",
 							trade.Symbol,
 							strings.ToUpper(trade.Side),
 							trade.OpenPrice,
 							trade.ClosePrice,
 							pnlSymbol,
-							trade.PnL,
-							netPnL,
-							trade.PnLPct,
+							netPnL,        // 净盈亏（主要显示）
+							trade.PnL,     // 毛盈亏（括号内）
+							trade.NetPnLPct, // 净盈亏百分比（主要显示）
+							trade.PnLPct,   // 毛盈亏百分比（括号内）
 							fee,
 							duration,
 							trade.Leverage,
@@ -461,7 +470,8 @@ func buildUserPrompt(ctx *Context) string {
 					}
 					sb.WriteString("\n")
 					sb.WriteString("**交易详情说明**:\n")
-					sb.WriteString("- **总盈亏**: 交易产生的总盈亏（未扣除手续费）\n")
+					sb.WriteString("- **净盈亏**: 扣除手续费后的实际盈亏（主要指标）\n")
+					sb.WriteString("- **毛盈亏**: 未扣除手续费的盈亏（括号内显示）\n")
 					sb.WriteString("- **净盈亏**: 扣除手续费后的实际盈亏（总盈亏 - 手续费）\n")
 					sb.WriteString("- **盈亏%**: 相对保证金的盈亏百分比\n")
 					sb.WriteString("- **手续费**: 开仓0.04% + 平仓0.04% = 0.08% × 仓位价值（开仓价 × 数量）\n")
@@ -612,11 +622,9 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 	// 开仓操作必须提供完整参数
 	if d.Action == "open_long" || d.Action == "open_short" {
 		// 根据币种使用配置的杠杆上限
-		maxLeverage := altcoinLeverage          // 山寨币使用配置的杠杆
-		maxPositionValue := accountEquity * 1.5 // 山寨币最多1.5倍账户净值
+		maxLeverage := altcoinLeverage // 山寨币使用配置的杠杆
 		if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
-			maxLeverage = btcEthLeverage          // BTC和ETH使用配置的杠杆
-			maxPositionValue = accountEquity * 10 // BTC/ETH最多10倍账户净值
+			maxLeverage = btcEthLeverage // BTC和ETH使用配置的杠杆
 		}
 
 		if d.Leverage <= 0 || d.Leverage > maxLeverage {
@@ -629,15 +637,6 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 		const minOrderNotional = 20.0
 		if d.PositionSizeUSD < minOrderNotional {
 			return fmt.Errorf("订单名义价值必须 >= %.0f USDT（币安最小限制），实际: %.2f USDT。请增加仓位大小或选择其他币种", minOrderNotional, d.PositionSizeUSD)
-		}
-		// 验证仓位价值上限（加1%容差以避免浮点数精度问题）
-		tolerance := maxPositionValue * 0.01 // 1%容差
-		if d.PositionSizeUSD > maxPositionValue+tolerance {
-			if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
-				return fmt.Errorf("BTC/ETH单币种仓位价值不能超过%.0f USDT（10倍账户净值），实际: %.0f", maxPositionValue, d.PositionSizeUSD)
-			} else {
-				return fmt.Errorf("山寨币单币种仓位价值不能超过%.0f USDT（1.5倍账户净值），实际: %.0f", maxPositionValue, d.PositionSizeUSD)
-			}
 		}
 		if d.StopLoss <= 0 || d.TakeProfit <= 0 {
 			return fmt.Errorf("止损和止盈必须大于0")

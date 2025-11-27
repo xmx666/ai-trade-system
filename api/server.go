@@ -1147,9 +1147,9 @@ func (s *Server) handlePerformance(c *gin.Context) {
 		return
 	}
 
-	// 分析最近100个周期的交易表现（避免长期持仓的交易记录丢失）
-	// 假设每3分钟一个周期，100个周期 = 5小时，足够覆盖大部分交易
-	performance, err := trader.GetDecisionLogger().AnalyzePerformance(100)
+	// 分析所有历史交易表现（获取所有历史记录）
+	// 使用一个非常大的数字来获取所有历史记录
+	performance, err := trader.GetDecisionLogger().AnalyzePerformance(100000)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("分析历史表现失败: %v", err),

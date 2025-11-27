@@ -198,7 +198,7 @@ func (t *FuturesTrader) SetMarginMode(symbol string, isCrossMargin bool) error {
 	return nil
 }
 
-// SetLeverage 设置杠杆（智能判断+冷却期）
+// SetLeverage 设置杠杆（智能判断+冷却期+时间戳错误重试）
 func (t *FuturesTrader) SetLeverage(symbol string, leverage int) error {
 	// 先尝试获取当前杠杆（从持仓信息）
 	currentLeverage := 0
@@ -220,28 +220,86 @@ func (t *FuturesTrader) SetLeverage(symbol string, leverage int) error {
 		return nil
 	}
 
-	// 切换杠杆
-	_, err = t.client.NewChangeLeverageService().
-		Symbol(symbol).
-		Leverage(leverage).
-		Do(context.Background())
+	// 重试机制：最多重试3次，处理时间戳错误（-1021）
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// 切换杠杆
+		_, err = t.client.NewChangeLeverageService().
+			Symbol(symbol).
+			Leverage(leverage).
+			Do(context.Background())
 
-	if err != nil {
+		if err == nil {
+			// 成功
+			log.Printf("  ✓ %s 杠杆已切换为 %dx", symbol, leverage)
+			// 切换杠杆后等待5秒（避免冷却期错误）
+			log.Printf("  ⏱ 等待5秒冷却期...")
+			time.Sleep(5 * time.Second)
+			return nil
+		}
+
+		// 检查错误类型
+		errStr := err.Error()
+		
 		// 如果错误信息包含"No need to change"，说明杠杆已经是目标值
-		if contains(err.Error(), "No need to change") {
+		if contains(errStr, "No need to change") {
 			log.Printf("  ✓ %s 杠杆已是 %dx", symbol, leverage)
 			return nil
 		}
+
+		// 如果是时间戳错误（-1021），尝试重试
+		if contains(errStr, "-1021") || contains(errStr, "Timestamp") {
+			if attempt < maxRetries {
+				// 获取服务器时间，计算时间差
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				serverTime, serverErr := t.client.NewServerTimeService().Do(ctx)
+				cancel()
+				
+				if serverErr == nil {
+					localTime := time.Now().Unix() * 1000
+					timeOffset := serverTime - localTime
+					log.Printf("  ⚠ 时间戳错误（-1021），检测到时间偏移: %d ms", timeOffset)
+					
+					// 如果时间偏移较大，等待一段时间让时间同步
+					if timeOffset > 1000 || timeOffset < -1000 {
+						waitTime := time.Duration(abs(timeOffset)) * time.Millisecond
+						if waitTime > 2*time.Second {
+							waitTime = 2 * time.Second // 最多等待2秒
+						}
+						log.Printf("  ⏱ 等待 %v 后重试（第 %d/%d 次）...", waitTime, attempt+1, maxRetries)
+						time.Sleep(waitTime)
+					} else {
+						// 时间偏移较小，短暂等待后重试
+						log.Printf("  ⏱ 短暂等待后重试（第 %d/%d 次）...", attempt+1, maxRetries)
+						time.Sleep(500 * time.Millisecond)
+					}
+					continue // 重试
+				} else {
+					// 无法获取服务器时间，短暂等待后重试
+					log.Printf("  ⚠ 无法获取服务器时间，等待后重试（第 %d/%d 次）...", attempt+1, maxRetries)
+					time.Sleep(1 * time.Second)
+					continue // 重试
+				}
+			} else {
+				// 最后一次重试也失败
+				return fmt.Errorf("设置杠杆失败（时间戳错误，已重试%d次）: %w", maxRetries, err)
+			}
+		}
+
+		// 其他错误，直接返回
 		return fmt.Errorf("设置杠杆失败: %w", err)
 	}
 
-	log.Printf("  ✓ %s 杠杆已切换为 %dx", symbol, leverage)
+	// 理论上不会到达这里
+	return fmt.Errorf("设置杠杆失败: %w", err)
+}
 
-	// 切换杠杆后等待5秒（避免冷却期错误）
-	log.Printf("  ⏱ 等待5秒冷却期...")
-	time.Sleep(5 * time.Second)
-
-	return nil
+// abs 返回绝对值
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // OpenLong 开多仓
