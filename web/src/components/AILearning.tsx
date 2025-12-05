@@ -57,6 +57,7 @@ export default function AILearning({ traderId }: AILearningProps) {
   const { language } = useLanguage();
   const cacheKey = traderId ? `performance-${traderId}` : 'performance';
   const storageKey = traderId ? `ai-learning-trades-${traderId}` : 'ai-learning-trades';
+  const binanceTradesKey = traderId ? `binance-trades-${traderId}` : 'binance-trades';
 
   const { data: performance, error } = useSWR<PerformanceAnalysis>(
     cacheKey,
@@ -65,6 +66,29 @@ export default function AILearning({ traderId }: AILearningProps) {
       refreshInterval: 30000, // 30秒刷新（AI学习分析数据更新频率较低）
       revalidateOnFocus: false,
       dedupingInterval: 20000,
+    }
+  );
+
+  // 获取币安真实交易记录（优先使用）
+  const { data: binanceTradesData } = useSWR(
+    traderId ? binanceTradesKey : null,
+    async () => {
+      if (!traderId) return null;
+      try {
+        // 获取所有交易对的交易记录（币安API要求指定symbol，我们获取BTCUSDT作为主要交易对）
+        const result = await api.getBinanceTrades(traderId, 'BTCUSDT', 100);
+        const trades = result.trades || [];
+        console.log('获取到币安交易记录:', trades.length, '条');
+        return trades;
+      } catch (err) {
+        console.error('获取币安交易记录失败:', err);
+        return null;
+      }
+    },
+    {
+      refreshInterval: 60000, // 60秒刷新一次（币安交易记录更新频率较低）
+      revalidateOnFocus: false,
+      dedupingInterval: 30000,
     }
   );
 
@@ -118,7 +142,140 @@ export default function AILearning({ traderId }: AILearningProps) {
     }
   }, [performance?.recent_trades, storageKey]);
 
-  // 合并API数据和localStorage数据
+  // 将币安交易数据转换为前端格式
+  const convertedBinanceTrades = useMemo(() => {
+    if (!binanceTradesData || binanceTradesData.length === 0) return null;
+    
+    // 币安API返回的是逐笔成交记录，需要按持仓方向和时间正确组合开平仓记录
+    // 策略：按symbol和position_side分组，然后按时间顺序配对开仓和平仓
+    
+    // 按symbol和position_side分组
+    const tradesByPosition = new Map<string, any[]>();
+    binanceTradesData.forEach((trade: any) => {
+      const key = `${trade.symbol}_${trade.position_side}`;
+      if (!tradesByPosition.has(key)) {
+        tradesByPosition.set(key, []);
+      }
+      tradesByPosition.get(key)!.push(trade);
+    });
+    
+    // 将币安交易记录转换为TradeOutcome格式
+    const convertedTrades: TradeOutcome[] = [];
+    
+    // 按持仓方向分组处理
+    tradesByPosition.forEach((trades) => {
+      if (trades.length === 0) return;
+      
+      // 按时间排序（从早到晚）
+      trades.sort((a, b) => a.time - b.time);
+      
+      // 按持仓方向配对开仓和平仓
+      // LONG: BUY开仓，SELL平仓
+      // SHORT: SELL开仓，BUY平仓
+      const positionSide = trades[0].position_side;
+      let openTrades: any[] = [];
+      
+      for (let i = 0; i < trades.length; i++) {
+        const trade = trades[i];
+        const isOpenTrade = (positionSide === 'LONG' && trade.side === 'BUY') || 
+                           (positionSide === 'SHORT' && trade.side === 'SELL');
+        const isCloseTrade = (positionSide === 'LONG' && trade.side === 'SELL') || 
+                            (positionSide === 'SHORT' && trade.side === 'BUY');
+        
+        if (isOpenTrade) {
+          // 开仓：累积数量
+          openTrades.push(trade);
+        } else if (isCloseTrade && openTrades.length > 0) {
+          // 平仓：匹配开仓记录
+          // 使用加权平均价格计算开仓价
+          let totalOpenQty = 0;
+          let totalOpenValue = 0;
+          let totalOpenCommission = 0;
+          
+          openTrades.forEach(ot => {
+            totalOpenQty += ot.qty;
+            totalOpenValue += ot.price * ot.qty;
+            totalOpenCommission += ot.commission || 0;
+          });
+          
+          const avgOpenPrice = totalOpenQty > 0 ? totalOpenValue / totalOpenQty : 0;
+          const closePrice = trade.price;
+          const closeQty = trade.qty;
+          const closeCommission = trade.commission || 0;
+          const realizedPnl = trade.realized_pnl || 0;
+          
+          // 计算实际使用的数量（取开仓和平仓的最小值）
+          const actualQty = Math.min(totalOpenQty, closeQty);
+          
+          if (actualQty > 0 && avgOpenPrice > 0 && closePrice > 0) {
+            const side = positionSide === 'LONG' ? 'long' : 'short';
+            const totalCommission = totalOpenCommission + closeCommission;
+            const netPnl = realizedPnl - totalCommission;
+            
+            // 计算持仓时长（使用最早的开仓时间和平仓时间）
+            const openTime = new Date(Math.min(...openTrades.map(ot => ot.time)));
+            const closeTime = new Date(trade.time);
+            const durationMs = Math.max(0, closeTime.getTime() - openTime.getTime());
+            const hours = Math.floor(durationMs / (1000 * 60 * 60));
+            const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((durationMs % (1000 * 60)) / 1000);
+            const duration = hours > 0 ? `${hours}小时${minutes}分` : minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`;
+            
+            // 计算盈亏百分比（基于保证金）
+            const positionValue = avgOpenPrice * actualQty;
+            // 从realized_pnl反推杠杆倍数（如果可能）
+            const estimatedLeverage = realizedPnl !== 0 && avgOpenPrice !== closePrice 
+              ? Math.abs(realizedPnl / ((closePrice - avgOpenPrice) * actualQty * (side === 'long' ? 1 : -1)))
+              : 15; // 默认15倍杠杆
+            const marginUsed = positionValue / estimatedLeverage;
+            const pnlPct = marginUsed > 0 ? (netPnl / marginUsed) * 100 : 0;
+            
+            convertedTrades.push({
+              symbol: trade.symbol,
+              side,
+              quantity: actualQty,
+              leverage: Math.round(estimatedLeverage),
+              open_price: avgOpenPrice,
+              close_price: closePrice,
+              position_value: positionValue,
+              margin_used: marginUsed,
+              pn_l: realizedPnl,
+              pn_l_pct: marginUsed > 0 ? (realizedPnl / marginUsed) * 100 : 0,
+              net_pn_l: netPnl,
+              net_pn_l_pct: pnlPct,
+              duration,
+              open_time: openTime.toISOString(),
+              close_time: closeTime.toISOString(),
+              was_stop_loss: false, // 币安API不直接提供止损信息
+            });
+            
+            // 减少已匹配的开仓数量
+            let remainingQty = closeQty;
+            openTrades = openTrades.filter(ot => {
+              if (remainingQty <= 0) return true;
+              if (ot.qty <= remainingQty) {
+                remainingQty -= ot.qty;
+                return false;
+              } else {
+                ot.qty -= remainingQty;
+                remainingQty = 0;
+                return true;
+              }
+            });
+          }
+        }
+      }
+    });
+    
+    // 按close_time降序排序（最新的在前）
+    convertedTrades.sort((a, b) => new Date(b.close_time).getTime() - new Date(a.close_time).getTime());
+    
+    console.log('转换后的币安交易记录:', convertedTrades.length, '条', convertedTrades.slice(0, 3));
+    
+    return convertedTrades;
+  }, [binanceTradesData]);
+
+  // 合并API数据和localStorage数据（优先使用币安真实数据）
   const mergedPerformance = useMemo(() => {
     try {
       const saved = localStorage.getItem(storageKey);
@@ -130,6 +287,37 @@ export default function AILearning({ traderId }: AILearningProps) {
         } catch (e) {
           console.error('Failed to parse saved trades:', e);
         }
+      }
+
+      // 优先使用币安真实交易数据
+      if (convertedBinanceTrades && convertedBinanceTrades.length > 0) {
+        // 使用币安真实数据，合并performance的其他统计信息
+        const binanceTrades = convertedBinanceTrades;
+        const winningTrades = binanceTrades.filter(t => (t.net_pn_l ?? t.pn_l) >= 0);
+        const losingTrades = binanceTrades.filter(t => (t.net_pn_l ?? t.pn_l) < 0);
+        const winCount = winningTrades.length;
+        const lossCount = losingTrades.length;
+        
+        const avgWin = winCount > 0 
+          ? winningTrades.reduce((sum, t) => sum + (t.net_pn_l ?? t.pn_l), 0) / winCount 
+          : 0;
+        const avgLoss = lossCount > 0 
+          ? losingTrades.reduce((sum, t) => sum + (t.net_pn_l ?? t.pn_l), 0) / lossCount 
+          : 0;
+        
+        return {
+          ...(performance || {}),
+          total_trades: binanceTrades.length,
+          winning_trades: winCount,
+          losing_trades: lossCount,
+          win_rate: binanceTrades.length > 0 ? (winCount / binanceTrades.length) * 100 : 0,
+          avg_win: avgWin,
+          avg_loss: avgLoss,
+          profit_factor: lossCount > 0 && winCount > 0 && avgLoss !== 0
+            ? avgWin / Math.abs(avgLoss)
+            : 0,
+          recent_trades: binanceTrades,
+        } as PerformanceAnalysis;
       }
 
       // 如果API返回了数据，使用API数据；否则使用保存的数据
@@ -228,7 +416,7 @@ export default function AILearning({ traderId }: AILearningProps) {
     }
 
     return performance;
-  }, [performance, storageKey]);
+  }, [performance, storageKey, convertedBinanceTrades]);
 
   if (error) {
     return (

@@ -6,19 +6,36 @@
 # Versions extracted as ARGs for maintainability
 # ═══════════════════════════════════════════════════════════════
 
-ARG GO_VERSION=1.25-alpine
-ARG ALPINE_VERSION=latest
+ARG GO_VERSION=1.25
+ARG DEBIAN_VERSION=bookworm-slim
 ARG TA_LIB_VERSION=0.4.0
 ARG GOPROXY=https://goproxy.cn,direct,https://proxy.golang.org
 
 # ──────────────────────────────────────────────────────────────
 # TA-Lib Build Stage (shared across builds)
 # ──────────────────────────────────────────────────────────────
-FROM alpine:${ALPINE_VERSION} AS ta-lib-builder
+FROM debian:${DEBIAN_VERSION} AS ta-lib-builder
 ARG TA_LIB_VERSION
 
-RUN apk update && apk add --no-cache \
-    wget tar make gcc g++ musl-dev autoconf automake
+# 配置代理（从构建参数传入）
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+ENV NO_PROXY=${NO_PROXY}
+
+# 使用国内镜像源（如果网络有问题，可以切换到阿里云镜像）
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list || true
+
+# 重试机制：如果第一次失败，等待后重试
+RUN for i in 1 2 3; do \
+    apt-get update && apt-get install -y --no-install-recommends \
+        wget tar make gcc g++ libc6-dev autoconf automake ca-certificates && break || \
+    (echo "尝试 $i/3 失败，等待 5 秒后重试..." && sleep 5); \
+    done && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
     tar -xzf ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
@@ -39,6 +56,14 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.
 # ──────────────────────────────────────────────────────────────
 FROM golang:${GO_VERSION} AS backend-builder
 
+# 配置代理（从构建参数传入）
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+ENV NO_PROXY=${NO_PROXY}
+
 # 配置 Go 代理（使用多个镜像源，提高下载成功率）
 # 优先使用 goproxy.cn（国内镜像），如果失败则尝试 direct 和官方代理
 # 可以通过构建参数自定义：docker build --build-arg GOPROXY=...
@@ -47,7 +72,12 @@ ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=sum.golang.google.cn
 ENV GOPRIVATE=
 
-RUN apk update && apk add --no-cache git make gcc g++ musl-dev
+# 重试机制：如果第一次失败，等待后重试
+RUN for i in 1 2 3; do \
+    apt-get update && apt-get install -y --no-install-recommends git make gcc g++ libc6-dev && break || \
+    (echo "尝试 $i/3 失败，等待 5 秒后重试..." && sleep 5); \
+    done && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=ta-lib-builder /usr/local /usr/local
 
@@ -63,17 +93,59 @@ RUN CGO_ENABLED=1 GOOS=linux \
 # ──────────────────────────────────────────────────────────────
 # Runtime Stage (Minimal Executable Environment)
 # ──────────────────────────────────────────────────────────────
-FROM alpine:${ALPINE_VERSION}
+FROM debian:${DEBIAN_VERSION}
 
-RUN apk update && apk add --no-cache ca-certificates tzdata
+# 使用国内镜像源（如果网络有问题，可以切换到阿里云镜像）
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list || true
+
+# 重试机制：如果第一次失败，等待后重试
+# 安装Python3和必要的依赖（用于krnos预测服务）
+# Debian自带glibc，完美支持PyTorch
+RUN for i in 1 2 3; do \
+    apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tzdata python3 python3-pip python3-dev \
+        wget curl build-essential && break || \
+    (echo "尝试 $i/3 失败，等待 5 秒后重试..." && sleep 5); \
+    done && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=ta-lib-builder /usr/local /usr/local
 WORKDIR /app
 COPY --from=backend-builder /app/nofx .
+# 复制Python预测脚本和依赖文件
+COPY predictor/krnos_predictor.py ./predictor/
+COPY predictor/requirements_kronos.txt ./predictor/
+# 复制Kronos项目（如果存在）
+# 注意：Kronos项目应该在nofx目录下（直接复制，不是符号链接）
+COPY Kronos /app/Kronos
+# 安装Python依赖（分步安装，确保关键依赖成功）
+# 注意：Debian 12 (bookworm) 也引入了PEP 668，需要--break-system-packages标志
+# 步骤1: 升级pip和基础工具
+RUN pip3 install --break-system-packages --upgrade pip setuptools wheel
+# 步骤2: 安装基础科学计算库（必须成功，否则构建失败）
+RUN pip3 install --break-system-packages --no-cache-dir numpy>=1.24.0 pandas>=1.5.0 && \
+    python3 -c "import numpy; import pandas; print('✓ 基础库安装成功: numpy', numpy.__version__, 'pandas', pandas.__version__)"
+# 步骤3: 安装深度学习框架（支持CUDA的版本，优先使用GPU）
+# 注意：RTX 3060支持CUDA 11.8+，使用cu118版本
+# Debian自带glibc，完美支持PyTorch，无需特殊配置
+RUN pip3 install --break-system-packages --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 && \
+    python3 -c "import torch; print('✓ torch安装成功:', torch.__version__); print('✓ CUDA可用:', torch.cuda.is_available() if torch.cuda.is_available() else '否')" || \
+    (echo "⚠️  CUDA版本安装失败，尝试CPU版本..." && \
+     pip3 install --break-system-packages --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu && \
+     python3 -c "import torch; print('✓ torch CPU版本安装成功:', torch.__version__)")
+# 步骤4: 安装transformers和相关库
+RUN pip3 install --break-system-packages --no-cache-dir transformers>=4.30.0 huggingface_hub>=0.16.0 safetensors>=0.3.0 einops>=0.6.0 || \
+    echo "⚠️  transformers依赖安装失败，但继续构建"
+# 步骤5: 验证关键依赖
+RUN python3 -c "import numpy; import pandas; print('✓ 验证: numpy', numpy.__version__, 'pandas', pandas.__version__)" && \
+    python3 -c "import torch; print('✓ 验证: torch', torch.__version__); print('✓ CUDA可用:', torch.cuda.is_available() if hasattr(torch, 'cuda') and torch.cuda.is_available() else '否')" 2>/dev/null || echo "⚠️  torch未安装或导入失败" && \
+    python3 -c "from transformers import AutoModel; print('✓ 验证: transformers可用')" 2>/dev/null || echo "⚠️  transformers未安装" && \
+    echo "✓ Python依赖安装完成"
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1
+  CMD curl -f http://localhost:8080/api/health || exit 1
 
 CMD ["./nofx"]

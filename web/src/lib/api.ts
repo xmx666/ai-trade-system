@@ -285,4 +285,23 @@ export const api = {
     });
     if (!res.ok) throw new Error('保存用户信号源配置失败');
   },
+
+  // 获取币安真实交易历史记录
+  async getBinanceTrades(traderId: string, symbol?: string, limit?: number, startTime?: string, endTime?: string): Promise<any> {
+    const params = new URLSearchParams();
+    params.set('trader_id', traderId);
+    if (symbol) params.set('symbol', symbol);
+    if (limit) params.set('limit', limit.toString());
+    if (startTime) params.set('start_time', startTime);
+    if (endTime) params.set('end_time', endTime);
+    
+    const res = await fetch(`${API_BASE}/binance-trades?${params.toString()}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.error || '获取币安交易记录失败');
+    }
+    return res.json();
+  },
 };

@@ -66,8 +66,20 @@ func Get(symbol string) (*Data, error) {
 		oiData = &OIData{Latest: 0, Average: 0}
 	}
 
-	// 获取Funding Rate
-	fundingRate, _ := getFundingRate(symbol)
+	// 获取Funding Rate和标记价格、指数价格
+	fundingRate, markPrice, indexPrice := getFundingRateAndPrices(symbol)
+
+	// 获取重要API数据（失败不影响主流程）
+	apiClient := NewAPIClient()
+	
+	// 获取多空持仓比（1小时周期）
+	longShortRatio, _ := apiClient.GetLongShortRatio(symbol, "1h")
+	
+	// 获取大户多空持仓比（1小时周期）
+	topTraderRatio, _ := apiClient.GetTopTraderLongShortRatio(symbol, "1h")
+	
+	// 获取24小时统计
+	ticker24hr, _ := apiClient.Get24hrTicker(symbol)
 
 	// 计算日内系列数据
 	intradayData := calculateIntradaySeries(klines3m)
@@ -91,6 +103,12 @@ func Get(symbol string) (*Data, error) {
 		IntradaySeries:    intradayData,
 		HourlyContext:     hourlyData,
 		LongerTermContext: longerTermData,
+		// 新增的重要API数据
+		LongShortRatio: longShortRatio,
+		TopTraderRatio: topTraderRatio,
+		Ticker24hr:      ticker24hr,
+		MarkPrice:       markPrice,
+		IndexPrice:      indexPrice,
 	}, nil
 }
 
@@ -378,19 +396,19 @@ func getOpenInterestData(symbol string) (*OIData, error) {
 	}, nil
 }
 
-// getFundingRate 获取资金费率
-func getFundingRate(symbol string) (float64, error) {
+// getFundingRateAndPrices 获取资金费率、标记价格和指数价格
+func getFundingRateAndPrices(symbol string) (float64, float64, float64) {
 	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=%s", symbol)
 
 	resp, err := http.Get(url)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0
 	}
 
 	var result struct {
@@ -404,103 +422,116 @@ func getFundingRate(symbol string) (float64, error) {
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, err
+		return 0, 0, 0
 	}
 
 	rate, _ := strconv.ParseFloat(result.LastFundingRate, 64)
-	return rate, nil
+	markPrice, _ := strconv.ParseFloat(result.MarkPrice, 64)
+	indexPrice, _ := strconv.ParseFloat(result.IndexPrice, 64)
+	
+	return rate, markPrice, indexPrice
+}
+
+// getLongShortRatioInterpretation 获取多空比解释
+func getLongShortRatioInterpretation(ratio float64) string {
+	if ratio > 1.2 {
+		return "多头占优（>1.2）"
+	} else if ratio > 1.0 {
+		return "多头略优（1.0-1.2）"
+	} else if ratio > 0.8 {
+		return "空头略优（0.8-1.0）"
+	} else {
+		return "空头占优（<0.8）"
+	}
 }
 
 // Format 格式化输出市场数据
 func Format(data *Data) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("current_price = %.2f, current_ema20 = %.3f, current_macd = %.3f, current_rsi (7 period) = %.3f\n\n",
+	sb.WriteString(fmt.Sprintf("Price=%.2f EMA20=%.3f MACD=%.3f RSI7=%.3f",
 		data.CurrentPrice, data.CurrentEMA20, data.CurrentMACD, data.CurrentRSI7))
 
-	sb.WriteString(fmt.Sprintf("In addition, here is the latest %s open interest and funding rate for perps:\n\n",
-		data.Symbol))
-
 	if data.OpenInterest != nil {
-		sb.WriteString(fmt.Sprintf("Open Interest: Latest: %.2f Average: %.2f\n\n",
-			data.OpenInterest.Latest, data.OpenInterest.Average))
+		sb.WriteString(fmt.Sprintf(" OI=%.2f AvgOI=%.2f", data.OpenInterest.Latest, data.OpenInterest.Average))
 	}
 
-	sb.WriteString(fmt.Sprintf("Funding Rate: %.2e\n\n", data.FundingRate))
+	sb.WriteString(fmt.Sprintf(" Funding=%.2e\n\n", data.FundingRate))
 
 	if data.IntradaySeries != nil {
-		sb.WriteString("Intraday series (3‑minute intervals, oldest → latest):\n\n")
+		sb.WriteString("Intraday series (3m, latest 5):\n")
 
 		if len(data.IntradaySeries.MidPrices) > 0 {
-			sb.WriteString(fmt.Sprintf("Mid prices: %s\n\n", formatFloatSlice(data.IntradaySeries.MidPrices)))
+			sb.WriteString(fmt.Sprintf("Prices: %s\n", formatFloatSlice(data.IntradaySeries.MidPrices, 5)))
 		}
 
 		if len(data.IntradaySeries.EMA20Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA indicators (20‑period): %s\n\n", formatFloatSlice(data.IntradaySeries.EMA20Values)))
+			sb.WriteString(fmt.Sprintf("EMA20: %s\n", formatFloatSlice(data.IntradaySeries.EMA20Values, 5)))
 		}
 
 		if len(data.IntradaySeries.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.IntradaySeries.MACDValues)))
+			sb.WriteString(fmt.Sprintf("MACD: %s\n", formatFloatSlice(data.IntradaySeries.MACDValues, 5)))
 		}
 
 		if len(data.IntradaySeries.RSI7Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (7‑Period): %s\n\n", formatFloatSlice(data.IntradaySeries.RSI7Values)))
+			sb.WriteString(fmt.Sprintf("RSI7: %s\n", formatFloatSlice(data.IntradaySeries.RSI7Values, 5)))
 		}
 
 		if len(data.IntradaySeries.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.IntradaySeries.RSI14Values)))
+			sb.WriteString(fmt.Sprintf("RSI14: %s\n", formatFloatSlice(data.IntradaySeries.RSI14Values, 5)))
 		}
+		sb.WriteString("\n")
 	}
 
 	if data.HourlyContext != nil {
-		sb.WriteString("Hourly context (1‑hour timeframe):\n\n")
-
-		sb.WriteString(fmt.Sprintf("20‑Period EMA: %.3f vs. 50‑Period EMA: %.3f\n\n",
-			data.HourlyContext.EMA20, data.HourlyContext.EMA50))
-
-		sb.WriteString(fmt.Sprintf("3‑Period ATR: %.3f vs. 14‑Period ATR: %.3f\n\n",
-			data.HourlyContext.ATR3, data.HourlyContext.ATR14))
-
-		sb.WriteString(fmt.Sprintf("Current Volume: %.3f vs. Average Volume: %.3f\n\n",
+		sb.WriteString("Hourly (1h): ")
+		sb.WriteString(fmt.Sprintf("EMA20=%.3f EMA50=%.3f ATR3=%.3f ATR14=%.3f Vol=%.3f AvgVol=%.3f",
+			data.HourlyContext.EMA20, data.HourlyContext.EMA50,
+			data.HourlyContext.ATR3, data.HourlyContext.ATR14,
 			data.HourlyContext.CurrentVolume, data.HourlyContext.AverageVolume))
-
 		if len(data.HourlyContext.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.HourlyContext.MACDValues)))
+			sb.WriteString(fmt.Sprintf(" MACD=%s", formatFloatSlice(data.HourlyContext.MACDValues, 3)))
 		}
-
 		if len(data.HourlyContext.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.HourlyContext.RSI14Values)))
+			sb.WriteString(fmt.Sprintf(" RSI14=%s", formatFloatSlice(data.HourlyContext.RSI14Values, 3)))
 		}
+		sb.WriteString("\n\n")
 	}
 
 	if data.LongerTermContext != nil {
-		sb.WriteString("Longer‑term context (4‑hour timeframe):\n\n")
-
-		sb.WriteString(fmt.Sprintf("20‑Period EMA: %.3f vs. 50‑Period EMA: %.3f\n\n",
-			data.LongerTermContext.EMA20, data.LongerTermContext.EMA50))
-
-		sb.WriteString(fmt.Sprintf("3‑Period ATR: %.3f vs. 14‑Period ATR: %.3f\n\n",
-			data.LongerTermContext.ATR3, data.LongerTermContext.ATR14))
-
-		sb.WriteString(fmt.Sprintf("Current Volume: %.3f vs. Average Volume: %.3f\n\n",
+		sb.WriteString("4h: ")
+		sb.WriteString(fmt.Sprintf("EMA20=%.3f EMA50=%.3f ATR3=%.3f ATR14=%.3f Vol=%.3f AvgVol=%.3f",
+			data.LongerTermContext.EMA20, data.LongerTermContext.EMA50,
+			data.LongerTermContext.ATR3, data.LongerTermContext.ATR14,
 			data.LongerTermContext.CurrentVolume, data.LongerTermContext.AverageVolume))
-
 		if len(data.LongerTermContext.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.MACDValues)))
+			sb.WriteString(fmt.Sprintf(" MACD=%s", formatFloatSlice(data.LongerTermContext.MACDValues, 3)))
 		}
-
 		if len(data.LongerTermContext.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.LongerTermContext.RSI14Values)))
+			sb.WriteString(fmt.Sprintf(" RSI14=%s", formatFloatSlice(data.LongerTermContext.RSI14Values, 3)))
 		}
+		sb.WriteString("\n\n")
 	}
 
 	return sb.String()
 }
 
 // formatFloatSlice 格式化float64切片为字符串
-func formatFloatSlice(values []float64) string {
-	strValues := make([]string, len(values))
-	for i, v := range values {
+// maxPoints: 最多输出的数据点数量（用于减少token使用）
+func formatFloatSlice(values []float64, maxPoints int) string {
+	if maxPoints <= 0 {
+		maxPoints = 5 // 默认最多5个点
+	}
+	
+	// 只取最后maxPoints个数据点（最新的）
+	start := len(values) - maxPoints
+	if start < 0 {
+		start = 0
+	}
+	
+	valuesToFormat := values[start:]
+	strValues := make([]string, len(valuesToFormat))
+	for i, v := range valuesToFormat {
 		strValues[i] = fmt.Sprintf("%.3f", v)
 	}
 	return "[" + strings.Join(strValues, ", ") + "]"

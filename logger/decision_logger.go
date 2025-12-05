@@ -25,7 +25,8 @@ type DecisionRecord struct {
 	Decisions      []DecisionAction   `json:"decisions"`       // 执行的决策
 	ExecutionLog   []string           `json:"execution_log"`   // 执行日志
 	Success        bool               `json:"success"`         // 是否成功
-	ErrorMessage   string             `json:"error_message"`   // 错误信息（如果有）
+	ErrorMessage   string             `json:"error_message"`    // 错误信息（如果有）
+	FinishReason   string             `json:"finish_reason"`   // API返回的完成原因：stop（正常结束）、length（达到token限制）
 }
 
 // AccountSnapshot 账户状态快照
@@ -336,8 +337,9 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 		SymbolStats:  make(map[string]*SymbolPerformance),
 	}
 
-	// 追踪持仓状态：symbol_side -> {side, openPrice, openTime, quantity, leverage}
-	openPositions := make(map[string]map[string]interface{})
+	// 追踪持仓状态：使用列表存储多个同方向的持仓（支持同一币种多次开仓）
+	// key: symbol_side -> []{side, openPrice, openTime, quantity, leverage}
+	openPositions := make(map[string][]map[string]interface{})
 
 	// 为了避免开仓记录在窗口外导致匹配失败，需要先从所有历史记录中找出未平仓的持仓
 	// 获取更多历史记录来构建完整的持仓状态（使用更大的窗口）
@@ -361,17 +363,27 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 
 				switch action.Action {
 				case "open_long", "open_short":
-					// 记录开仓
-					openPositions[posKey] = map[string]interface{}{
+					// 记录开仓（添加到列表，支持多次开仓）
+					if openPositions[posKey] == nil {
+						openPositions[posKey] = make([]map[string]interface{}, 0)
+					}
+					openPositions[posKey] = append(openPositions[posKey], map[string]interface{}{
 						"side":      side,
 						"openPrice": action.Price,
 						"openTime":  action.Timestamp,
 						"quantity":  action.Quantity,
 						"leverage":  action.Leverage,
-					}
+					})
 				case "close_long", "close_short":
-					// 移除已平仓记录
-					delete(openPositions, posKey)
+					// 移除最早的开仓记录（FIFO：先进先出）
+					if positions, exists := openPositions[posKey]; exists && len(positions) > 0 {
+						// 移除第一个（最早的）开仓记录
+						openPositions[posKey] = positions[1:]
+						// 如果列表为空，删除key
+						if len(openPositions[posKey]) == 0 {
+							delete(openPositions, posKey)
+						}
+					}
 				}
 			}
 		}
@@ -395,23 +407,34 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 
 			switch action.Action {
 			case "open_long", "open_short":
-				// 更新开仓记录（可能已经在预填充时记录过了）
-				openPositions[posKey] = map[string]interface{}{
+				// 更新开仓记录（添加到列表，支持多次开仓）
+				if openPositions[posKey] == nil {
+					openPositions[posKey] = make([]map[string]interface{}, 0)
+				}
+				openPositions[posKey] = append(openPositions[posKey], map[string]interface{}{
 					"side":      side,
 					"openPrice": action.Price,
 					"openTime":  action.Timestamp,
 					"quantity":  action.Quantity,
 					"leverage":  action.Leverage,
-				}
+				})
 
 			case "close_long", "close_short":
 				// 查找对应的开仓记录（可能来自预填充或当前窗口）
-				if openPos, exists := openPositions[posKey]; exists {
+				// 使用FIFO策略：匹配最早的开仓记录
+				if positions, exists := openPositions[posKey]; exists && len(positions) > 0 {
+					// 获取最早的开仓记录（列表的第一个）
+					openPos := positions[0]
 					openPrice := openPos["openPrice"].(float64)
 					openTime := openPos["openTime"].(time.Time)
 					side := openPos["side"].(string)
 					quantity := openPos["quantity"].(float64)
 					leverage := openPos["leverage"].(int)
+
+						// 安全检查：确保杠杆至少为1，避免除以0或错误计算
+						if leverage <= 0 {
+							leverage = 1 // 如果杠杆为0或负数，使用默认值1
+						}
 
 					// 计算实际盈亏（USDT）
 					// 合约交易 PnL 计算：quantity × 价格差
@@ -423,7 +446,9 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 						pnl = quantity * (openPrice - action.Price)
 					}
 
-					// 计算盈亏百分比（相对保证金）
+						// 计算盈亏百分比（相对保证金，考虑杠杆）
+						// ⚠️ 重要：这是保证金百分比，不是价格变化百分比
+						// 例如：价格涨1%，10x杠杆 = 保证金涨10%
 					positionValue := quantity * openPrice
 					marginUsed := positionValue / float64(leverage)
 					pnlPct := 0.0
@@ -491,14 +516,155 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 						stats.LosingTrades++
 					}
 
-					// 移除已平仓记录
-					delete(openPositions, posKey)
+					// 移除已平仓记录（FIFO：移除最早的开仓记录）
+					openPositions[posKey] = positions[1:]
+					// 如果列表为空，删除key
+					if len(openPositions[posKey]) == 0 {
+						delete(openPositions, posKey)
+					}
 				} else {
-					// 未找到匹配的开仓记录，记录警告（可能开仓记录在窗口外或丢失）
-					fmt.Printf("⚠️  警告: 平仓记录未找到匹配的开仓记录 - Symbol: %s, Side: %s, ClosePrice: %.4f, Time: %s\n",
-						symbol, side, action.Price, action.Timestamp.Format("2006-01-02 15:04:05"))
-					// 注意：这种情况下不会记录到 RecentTrades，可能导致交易记录不完整
-					// 建议：扩大 lookbackCycles 或检查历史记录是否完整
+					// ⚠️ 未找到匹配的开仓记录（可能开仓记录在窗口外、手动开仓、或系统重启后丢失）
+					// 但为了确保所有平仓记录都能显示，我们尝试从币安API或历史记录中查找
+					// 如果仍然找不到，至少创建一个不完整的交易记录（标记为未知开仓）
+					
+					// 尝试从更大的历史窗口查找开仓记录
+					// 使用时间顺序匹配：找到在平仓时间之前最近的开仓记录
+					extendedRecords, err := l.GetLatestRecords(lookbackCycles * 10) // 扩大10倍窗口
+					var foundOpenPos map[string]interface{} = nil
+					if err == nil {
+						// 从旧到新遍历，找到在平仓时间之前最近的开仓记录
+						closeTime := action.Timestamp
+						for _, extRecord := range extendedRecords {
+							for _, extAction := range extRecord.Decisions {
+								if !extAction.Success {
+									continue
+								}
+								extSymbol := extAction.Symbol
+								extSide := ""
+								if extAction.Action == "open_long" || extAction.Action == "close_long" {
+									extSide = "long"
+								} else if extAction.Action == "open_short" || extAction.Action == "close_short" {
+									extSide = "short"
+								}
+								extPosKey := extSymbol + "_" + extSide
+								
+								// 如果找到匹配的开仓记录，且开仓时间在平仓时间之前
+								if extPosKey == posKey && (extAction.Action == "open_long" || extAction.Action == "open_short") {
+									if extAction.Timestamp.Before(closeTime) || extAction.Timestamp.Equal(closeTime) {
+										// 如果还没有找到，或者这个开仓记录更接近平仓时间，则使用这个
+										if foundOpenPos == nil || extAction.Timestamp.After(foundOpenPos["openTime"].(time.Time)) {
+											foundOpenPos = map[string]interface{}{
+												"side":      extSide,
+												"openPrice": extAction.Price,
+												"openTime":  extAction.Timestamp,
+												"quantity":  extAction.Quantity,
+												"leverage":  extAction.Leverage,
+											}
+										}
+									}
+								}
+							}
+						}
+						if foundOpenPos != nil {
+							fmt.Printf("✅ 在扩展窗口中找到匹配的开仓记录 - Symbol: %s, Side: %s, OpenPrice: %.4f, OpenTime: %s\n",
+								symbol, side, foundOpenPos["openPrice"].(float64), foundOpenPos["openTime"].(time.Time).Format("2006-01-02 15:04:05"))
+						}
+					}
+					
+					if foundOpenPos != nil {
+						// 找到了开仓记录，使用它创建完整的交易记录
+						openPrice := foundOpenPos["openPrice"].(float64)
+						openTime := foundOpenPos["openTime"].(time.Time)
+						side := foundOpenPos["side"].(string)
+						quantity := foundOpenPos["quantity"].(float64)
+						leverage := foundOpenPos["leverage"].(int)
+						
+						// 安全检查：确保杠杆至少为1，避免除以0或错误计算
+						if leverage <= 0 {
+							leverage = 1 // 如果杠杆为0或负数，使用默认值1
+						}
+						
+						// 计算实际盈亏
+						var pnl float64
+						if side == "long" {
+							pnl = quantity * (action.Price - openPrice)
+						} else {
+							pnl = quantity * (openPrice - action.Price)
+						}
+						
+						// 计算盈亏百分比（相对保证金，考虑杠杆）
+						// ⚠️ 重要：这是保证金百分比，不是价格变化百分比
+						// 例如：价格涨1%，10x杠杆 = 保证金涨10%
+						positionValue := quantity * openPrice
+						marginUsed := positionValue / float64(leverage)
+						pnlPct := 0.0
+						if marginUsed > 0 {
+							pnlPct = (pnl / marginUsed) * 100
+						}
+						
+						// 计算手续费
+						fee := positionValue * 0.0008
+						netPnL := pnl - fee
+						netPnLPct := 0.0
+						if marginUsed > 0 {
+							netPnLPct = (netPnL / marginUsed) * 100
+						}
+						
+						// 创建交易记录
+						outcome := TradeOutcome{
+							Symbol:        symbol,
+							Side:          side,
+							Quantity:      quantity,
+							Leverage:      leverage,
+							OpenPrice:     openPrice,
+							ClosePrice:    action.Price,
+							PositionValue: positionValue,
+							MarginUsed:    marginUsed,
+							PnL:           pnl,
+							PnLPct:        pnlPct,
+							Fee:           fee,
+							NetPnL:        netPnL,
+							NetPnLPct:     netPnLPct,
+							Duration:      action.Timestamp.Sub(openTime).String(),
+							OpenTime:      openTime,
+							CloseTime:     action.Timestamp,
+							WasStopLoss:   true, // 标记为可能是止损/手动平仓
+						}
+						
+						analysis.RecentTrades = append(analysis.RecentTrades, outcome)
+						analysis.TotalTrades++
+						
+						// 分类交易
+						if netPnL > 0 {
+							analysis.WinningTrades++
+							analysis.AvgWin += netPnL
+						} else if netPnL < 0 {
+							analysis.LosingTrades++
+							analysis.AvgLoss += netPnL
+						}
+						
+						// 更新币种统计
+						if _, exists := analysis.SymbolStats[symbol]; !exists {
+							analysis.SymbolStats[symbol] = &SymbolPerformance{
+								Symbol: symbol,
+							}
+						}
+						stats := analysis.SymbolStats[symbol]
+						stats.TotalTrades++
+						stats.TotalPnL += netPnL
+						if netPnL > 0 {
+							stats.WinningTrades++
+						} else if netPnL < 0 {
+							stats.LosingTrades++
+						}
+					} else {
+						// 仍然找不到开仓记录，记录警告但至少显示平仓信息
+						fmt.Printf("⚠️  警告: 平仓记录未找到匹配的开仓记录 - Symbol: %s, Side: %s, ClosePrice: %.4f, Time: %s\n",
+							symbol, side, action.Price, action.Timestamp.Format("2006-01-02 15:04:05"))
+						fmt.Printf("  💡 提示: 这可能是手动平仓或止损触发，开仓记录可能在更早的历史中或已丢失\n")
+						// 注意：这种情况下仍然不会记录到 RecentTrades，因为缺少开仓信息无法计算盈亏
+						// 但至少系统会记录这个平仓操作，用户可以在币安查看完整信息
+					}
 				}
 			}
 		}
@@ -506,14 +672,22 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 
 	// 检查是否有未平仓的持仓（可能还在持仓中，或平仓记录丢失）
 	if len(openPositions) > 0 {
-		fmt.Printf("⚠️  警告: 发现 %d 个未匹配的开仓记录（可能还在持仓中，或平仓记录丢失）\n", len(openPositions))
-		for posKey, openPos := range openPositions {
+		totalUnmatched := 0
+		for _, positions := range openPositions {
+			totalUnmatched += len(positions)
+		}
+		fmt.Printf("⚠️  警告: 发现 %d 个未匹配的开仓记录（可能还在持仓中，或平仓记录丢失）\n", totalUnmatched)
+		for posKey, positions := range openPositions {
+			if len(positions) == 0 {
+				continue
+			}
 			symbol := strings.Split(posKey, "_")[0]
 			side := strings.Split(posKey, "_")[1]
-			openPrice := openPos["openPrice"].(float64)
-			openTime := openPos["openTime"].(time.Time)
-			fmt.Printf("  - %s %s: 开仓价 %.4f, 开仓时间: %s\n",
-				symbol, side, openPrice, openTime.Format("2006-01-02 15:04:05"))
+			// 显示第一个未匹配的开仓记录
+			openPos := positions[0]
+			fmt.Printf("  - %s %s: 开仓价 %.4f, 开仓时间: %s, 数量: %.4f, 杠杆: %dx (还有 %d 个未匹配)\n",
+				symbol, side, openPos["openPrice"].(float64), openPos["openTime"].(time.Time).Format("2006-01-02 15:04:05"),
+				openPos["quantity"].(float64), openPos["leverage"].(int), len(positions)-1)
 		}
 	}
 
@@ -648,7 +822,7 @@ func (l *DecisionLogger) GetTodayTradeCount() (int, error) {
 	return l.GetHourlyTradeCount()
 }
 
-// GetHourlyTradeCount 获取最近1小时的交易次数（开仓+平仓）
+// GetHourlyTradeCount 获取最近1小时的交易次数（一次开单+一次平单算一个操作）
 func (l *DecisionLogger) GetHourlyTradeCount() (int, error) {
 	// 获取最近1小时的时间范围
 	now := time.Now()
@@ -659,7 +833,17 @@ func (l *DecisionLogger) GetHourlyTradeCount() (int, error) {
 		return 0, fmt.Errorf("读取日志目录失败: %w", err)
 	}
 
-	tradeCount := 0
+	// 收集最近1小时内的所有开仓和平仓操作
+	type TradeAction struct {
+		Action    string
+		Symbol    string
+		Timestamp time.Time
+	}
+
+	var opens []TradeAction   // 开仓操作
+	var closes []TradeAction  // 平仓操作
+
+	// 遍历所有日志文件，收集最近1小时内的交易操作
 	for _, file := range files {
 		if file.IsDir() {
 			continue
@@ -676,21 +860,117 @@ func (l *DecisionLogger) GetHourlyTradeCount() (int, error) {
 			continue
 		}
 
-		// 统计成功的开仓和平仓操作
-		// 注意：只统计成功的交易，失败的交易不计入
-		// 并且只统计最近1小时执行的交易（基于action.Timestamp）
+		// 收集成功的开仓和平仓操作
 		for _, action := range record.Decisions {
 			if action.Success {
 				// 检查交易时间是否在最近1小时内
 				if action.Timestamp.After(oneHourAgo) && action.Timestamp.Before(now) {
-					if action.Action == "open_long" || action.Action == "open_short" ||
-						action.Action == "close_long" || action.Action == "close_short" {
-						tradeCount++
+					if action.Action == "open_long" || action.Action == "open_short" {
+						opens = append(opens, TradeAction{
+							Action:    action.Action,
+							Symbol:    action.Symbol,
+							Timestamp: action.Timestamp,
+						})
+					} else if action.Action == "close_long" || action.Action == "close_short" {
+						closes = append(closes, TradeAction{
+							Action:    action.Action,
+							Symbol:    action.Symbol,
+							Timestamp: action.Timestamp,
+						})
 					}
 				}
 			}
 		}
 	}
 
+	// 配对开仓和平仓：一次开单+一次平单算一个操作
+	// 配对规则：同一个symbol，同一个方向（long/short），开仓时间早于平仓时间
+	tradeCount := 0
+	matchedCloses := make(map[int]bool) // 标记已配对的平仓
+
+	for _, open := range opens {
+		// 确定对应的平仓操作类型
+		var closeAction string
+		if open.Action == "open_long" {
+			closeAction = "close_long"
+		} else if open.Action == "open_short" {
+			closeAction = "close_short"
+		}
+
+		// 查找匹配的平仓操作（同一个symbol，同一个方向，时间在开仓之后）
+		matched := false
+		for j, close := range closes {
+			if matchedCloses[j] {
+				continue // 已配对，跳过
+			}
+			if close.Symbol == open.Symbol && close.Action == closeAction && close.Timestamp.After(open.Timestamp) {
+				// 找到匹配的平仓，配对成功，算一次操作
+				matchedCloses[j] = true
+				matched = true
+				tradeCount++
+				break
+			}
+		}
+
+		// 如果没有找到匹配的平仓，开仓单独算一次操作（这种情况应该很少，可能是刚开仓还未平仓）
+		if !matched {
+			tradeCount++
+		}
+	}
+
+	// 统计未配对的平仓操作（这种情况应该很少，可能是平仓了之前开的仓）
+	for j := range closes {
+		if !matchedCloses[j] {
+			tradeCount++
+		}
+	}
+
 	return tradeCount, nil
+}
+
+// GetLastOpenTradeTime 获取最近一次开单的时间（返回距离现在的小时数，如果没有开单记录则返回-1）
+func (l *DecisionLogger) GetLastOpenTradeTime() (float64, error) {
+	files, err := ioutil.ReadDir(l.logDir)
+	if err != nil {
+		return -1, fmt.Errorf("读取日志目录失败: %w", err)
+	}
+
+	var lastOpenTime time.Time
+	found := false
+
+	// 遍历所有日志文件，查找最近一次开单操作
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		filepath := filepath.Join(l.logDir, file.Name())
+		data, err := ioutil.ReadFile(filepath)
+		if err != nil {
+			continue
+		}
+
+		var record DecisionRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			continue
+		}
+
+		// 查找成功的开仓操作
+		for _, action := range record.Decisions {
+			if action.Success && (action.Action == "open_long" || action.Action == "open_short") {
+				if !found || action.Timestamp.After(lastOpenTime) {
+					lastOpenTime = action.Timestamp
+					found = true
+				}
+			}
+		}
+	}
+
+	if !found {
+		return -1, nil // 没有找到开单记录
+	}
+
+	// 计算距离现在的小时数
+	hoursSinceLastTrade := time.Since(lastOpenTime).Hours()
+	return hoursSinceLastTrade, nil
 }

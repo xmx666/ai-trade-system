@@ -562,7 +562,8 @@ func containsUserPrefix(traderID string) bool {
 }
 
 // LoadUserTraders 为特定用户加载交易员到内存
-func (tm *TraderManager) LoadUserTraders(database *config.Database, userID string) error {
+// forceReload: 如果为true，即使交易员已加载也会重新加载（用于配置更新）
+func (tm *TraderManager) LoadUserTraders(database *config.Database, userID string, forceReload bool) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -618,9 +619,18 @@ func (tm *TraderManager) LoadUserTraders(database *config.Database, userID strin
 	// 为每个交易员获取AI模型和交易所配置
 	for _, traderCfg := range traders {
 		// 检查是否已经加载过这个交易员
-		if _, exists := tm.traders[traderCfg.ID]; exists {
-			log.Printf("⚠️ 交易员 %s 已经加载，跳过", traderCfg.Name)
-			continue
+		if existingTrader, exists := tm.traders[traderCfg.ID]; exists {
+			if !forceReload {
+				// 如果不是强制重新加载，跳过已加载的交易员（避免在启动时被停止）
+				log.Printf("ℹ️  交易员 %s 已加载，跳过（如需更新配置请使用forceReload=true）", traderCfg.Name)
+				continue
+			}
+			// 强制重新加载：先停止它，然后重新加载以应用新配置
+			log.Printf("🔄 交易员 %s 已加载，停止并重新加载以应用新配置", traderCfg.Name)
+			existingTrader.Stop()
+			delete(tm.traders, traderCfg.ID)
+			// 等待一小段时间确保停止完成
+			time.Sleep(100 * time.Millisecond)
 		}
 
 		// 获取AI模型配置（使用该用户的配置）
