@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-12-03T15:47:52.781176929+08:00",
+  "cycle_number": 1,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 119.29293901,
+    "available_balance": 83.10627735,
+    "total_unrealized_profit": 10.292939009999998,
+    "position_count": 1,
+    "margin_used_pct": 31.14923675146027
+  },
+  "positions": [
+    {
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "position_amt": 0.006,
+      "entry_price": 93033.4,
+      "mark_price": 92897.1,
+      "unrealized_profit": -0.8178,
+      "leverage": 15,
+      "liquidation_price": 87214.84911981
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "ADAUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: API返回错误 (status 400): {\"error\":{\"message\":\"Invalid max_tokens value, the valid range of max_tokens is [1, 8192]\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_request_error\"}}"
+}

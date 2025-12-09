@@ -1,0 +1,42 @@
+{
+  "timestamp": "2025-12-04T18:40:21.375064242+08:00",
+  "cycle_number": 17,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 121.88051829000001,
+    "available_balance": 70.21658124,
+    "total_unrealized_profit": 12.880518290000012,
+    "position_count": 1,
+    "margin_used_pct": 40.82647555009835
+  },
+  "positions": [
+    {
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "position_amt": 0.008,
+      "entry_price": 92986.9,
+      "mark_price": 93299.1,
+      "unrealized_profit": 2.4976,
+      "leverage": 15,
+      "liquidation_price": 87189.8673381
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "HYPEUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: API返回错误 (status 400): {\"error\":{\"message\":\"This model's maximum context length is 131072 tokens. However, you requested 146925 tokens (138925 in the messages, 8000 in the completion). Please reduce the length of the messages or completion.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_request_error\"}}",
+  "finish_reason": ""
+}

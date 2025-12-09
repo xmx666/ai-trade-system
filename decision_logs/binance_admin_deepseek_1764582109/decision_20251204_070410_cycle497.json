@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-12-04T07:04:10.146248332+08:00",
+  "cycle_number": 497,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 129.72059513,
+    "available_balance": 89.43390514,
+    "total_unrealized_profit": 20.720595129999992,
+    "position_count": 1,
+    "margin_used_pct": 28.973706867476352
+  },
+  "positions": [
+    {
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "position_amt": 0.004,
+      "entry_price": 93159.9,
+      "mark_price": 93962.16244928,
+      "unrealized_profit": 3.20904979,
+      "leverage": 10,
+      "liquidation_price": 84227.39954819
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "ADAUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 读取响应失败: stream error: stream ID 95; INTERNAL_ERROR; received from peer"
+}

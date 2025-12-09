@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-11-06T17:42:48.080273273+08:00",
+  "cycle_number": 16,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 93.60743103,
+    "available_balance": 89.66664139,
+    "total_unrealized_profit": 3.6074310300000008,
+    "position_count": 1,
+    "margin_used_pct": 4.209911024557301
+  },
+  "positions": [
+    {
+      "symbol": "XRPUSDT",
+      "side": "short",
+      "position_amt": 32.4,
+      "entry_price": 2.3125,
+      "mark_price": 2.31095684,
+      "unrealized_profit": 0.04999838,
+      "leverage": 19,
+      "liquidation_price": 5.17420406
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 发送请求失败: Post \"https://api.siliconflow.cn/v1/chat/completions\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+}

@@ -173,7 +173,76 @@ start() {
     # Rebuild images if flag set
     if [ "$1" == "--build" ]; then
         print_info "重新构建镜像..."
-        $COMPOSE_CMD up -d --build
+        print_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        print_info "构建过程会显示详细进度，请耐心等待"
+        print_info "首次构建可能需要 10-25 分钟"
+        print_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        
+        # 先构建镜像（显示详细进度）
+        print_info "步骤 1/2: 构建镜像（显示详细进度）..."
+        
+        # 读取代理配置（如果存在）
+        BUILD_ARGS=""
+        if [ -f ".env" ]; then
+            HTTP_PROXY_VAL=$(grep "^HTTP_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ')
+            HTTPS_PROXY_VAL=$(grep "^HTTPS_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ')
+            NO_PROXY_VAL=$(grep "^NO_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ')
+            
+            if [ -n "$HTTP_PROXY_VAL" ]; then
+                BUILD_ARGS="$BUILD_ARGS --build-arg HTTP_PROXY=$HTTP_PROXY_VAL"
+            fi
+            if [ -n "$HTTPS_PROXY_VAL" ]; then
+                BUILD_ARGS="$BUILD_ARGS --build-arg HTTPS_PROXY=$HTTPS_PROXY_VAL"
+            fi
+            if [ -n "$NO_PROXY_VAL" ]; then
+                BUILD_ARGS="$BUILD_ARGS --build-arg NO_PROXY=$NO_PROXY_VAL"
+            fi
+        fi
+        
+        # 设置BuildKit代理环境变量（如果.env中有代理配置）
+        if [ -f .env ]; then
+            export HTTP_PROXY=$(grep "^HTTP_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ' || echo "")
+            export HTTPS_PROXY=$(grep "^HTTPS_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ' || echo "")
+            export NO_PROXY=$(grep "^NO_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ' || echo "")
+            if [ -n "$HTTP_PROXY" ]; then
+                print_info "设置BuildKit代理环境变量: HTTP_PROXY=$HTTP_PROXY"
+            fi
+        fi
+        
+        # --progress 是全局标志，需要放在 compose 后面
+        if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
+            if [ -n "$BUILD_ARGS" ]; then
+                print_info "使用代理配置进行构建..."
+                docker compose --progress=plain build $BUILD_ARGS
+            else
+                docker compose --progress=plain build
+            fi
+        else
+            if [ -n "$BUILD_ARGS" ]; then
+                print_info "使用代理配置进行构建..."
+                $COMPOSE_CMD build $BUILD_ARGS
+            else
+                $COMPOSE_CMD build
+            fi
+        fi
+        
+        if [ $? -ne 0 ]; then
+            print_error "镜像构建失败！"
+            exit 1
+        fi
+        
+        print_success "镜像构建完成！"
+        echo ""
+        
+        # 然后启动容器
+        print_info "步骤 2/2: 启动容器..."
+        $COMPOSE_CMD up -d
+        
+        if [ $? -ne 0 ]; then
+            print_error "容器启动失败！"
+            exit 1
+        fi
     else
         print_info "启动容器..."
         $COMPOSE_CMD up -d
@@ -210,8 +279,13 @@ restart() {
 # ------------------------------------------------------------------------
 logs() {
     if [ -z "$2" ]; then
+        print_info "查看所有服务的完整实时日志（按 Ctrl+C 退出）..."
+        print_info "提示：使用 './start.sh logs nofx' 只查看后端日志"
+        print_info "提示：使用 './start.sh logs nofx-frontend' 只查看前端日志"
+        echo ""
         $COMPOSE_CMD logs -f
     else
+        print_info "查看服务 '$2' 的完整实时日志（按 Ctrl+C 退出）..."
         $COMPOSE_CMD logs -f "$2"
     fi
 }
@@ -251,7 +325,52 @@ clean() {
 update() {
     print_info "正在更新..."
     git pull
-    $COMPOSE_CMD up -d --build
+    
+    print_info "重新构建镜像（显示详细进度）..."
+    
+    # 读取代理配置（如果存在）
+    BUILD_ARGS=""
+    if [ -f ".env" ]; then
+        HTTP_PROXY_VAL=$(grep "^HTTP_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ')
+        HTTPS_PROXY_VAL=$(grep "^HTTPS_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ')
+        NO_PROXY_VAL=$(grep "^NO_PROXY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d ' ')
+        
+        if [ -n "$HTTP_PROXY_VAL" ]; then
+            BUILD_ARGS="$BUILD_ARGS --build-arg HTTP_PROXY=$HTTP_PROXY_VAL"
+        fi
+        if [ -n "$HTTPS_PROXY_VAL" ]; then
+            BUILD_ARGS="$BUILD_ARGS --build-arg HTTPS_PROXY=$HTTPS_PROXY_VAL"
+        fi
+        if [ -n "$NO_PROXY_VAL" ]; then
+            BUILD_ARGS="$BUILD_ARGS --build-arg NO_PROXY=$NO_PROXY_VAL"
+        fi
+    fi
+    
+    # --progress 是全局标志，需要放在 compose 后面
+    if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
+        if [ -n "$BUILD_ARGS" ]; then
+            print_info "使用代理配置进行构建..."
+            docker compose --progress=plain build $BUILD_ARGS
+        else
+            docker compose --progress=plain build
+        fi
+    else
+        if [ -n "$BUILD_ARGS" ]; then
+            print_info "使用代理配置进行构建..."
+            $COMPOSE_CMD build $BUILD_ARGS
+        else
+            $COMPOSE_CMD build
+        fi
+    fi
+    
+    if [ $? -ne 0 ]; then
+        print_error "镜像构建失败！"
+        exit 1
+    fi
+    
+    print_info "启动容器..."
+    $COMPOSE_CMD up -d
+    
     print_success "更新完成"
 }
 
@@ -264,13 +383,13 @@ show_help() {
     echo "用法: ./start.sh [command] [options]"
     echo ""
     echo "命令:"
-    echo "  start [--build]    启动服务（可选：重新构建）"
+    echo "  start [--build]    启动服务（可选：重新构建，会显示详细构建进度）"
     echo "  stop               停止服务"
     echo "  restart            重启服务"
-    echo "  logs [service]     查看日志（可选：指定服务名 backend/frontend）"
+    echo "  logs [service]     查看日志（可选：指定服务名 nofx/nofx-frontend）"
     echo "  status             查看服务状态"
     echo "  clean              清理所有容器和数据"
-    echo "  update             更新代码并重启"
+    echo "  update             更新代码并重启（会显示详细构建进度）"
     echo "  help               显示此帮助信息"
     echo ""
     echo "示例:"

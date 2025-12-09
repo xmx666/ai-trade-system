@@ -421,13 +421,13 @@ type UpdateTraderRequest struct {
 	InitialBalance      float64 `json:"initial_balance"`
 	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
 	BTCETHLeverage      int     `json:"btc_eth_leverage"`
-	AltcoinLeverage    int     `json:"altcoin_leverage"`
+	AltcoinLeverage     int     `json:"altcoin_leverage"`
 	TradingSymbols      string  `json:"trading_symbols"`
 	CustomPrompt        string  `json:"custom_prompt"`
 	OverrideBasePrompt  bool    `json:"override_base_prompt"`
 	IsCrossMargin       *bool   `json:"is_cross_margin"`
-	UseCoinPool         bool    `json:"use_coin_pool"`         // 是否使用Coin Pool信号源
-	UseOITop            bool    `json:"use_oi_top"`            // 是否使用OI Top信号源
+	UseCoinPool         bool    `json:"use_coin_pool"` // 是否使用Coin Pool信号源
+	UseOITop            bool    `json:"use_oi_top"`    // 是否使用OI Top信号源
 }
 
 // handleUpdateTrader 更新交易员配置
@@ -499,10 +499,10 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		SystemPromptTemplate: existingTrader.SystemPromptTemplate, // 保持原值
 		IsCrossMargin:        isCrossMargin,
 		ScanIntervalMinutes:  scanIntervalMinutes,
-		IsRunning:            existingTrader.IsRunning, // 保持原值
-		UseCoinPool:         req.UseCoinPool,         // 更新Coin Pool配置
-		UseOITop:            req.UseOITop,            // 更新OI Top配置
-		UseInsideCoins:      existingTrader.UseInsideCoins, // 保持原值
+		IsRunning:            existingTrader.IsRunning,      // 保持原值
+		UseCoinPool:          req.UseCoinPool,               // 更新Coin Pool配置
+		UseOITop:             req.UseOITop,                  // 更新OI Top配置
+		UseInsideCoins:       existingTrader.UseInsideCoins, // 保持原值
 	}
 
 	// 更新数据库
@@ -514,7 +514,7 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 
 	// 检查交易员是否正在运行（在重新加载之前）
 	wasRunning := existingTrader.IsRunning
-	
+
 	// 重新加载交易员到内存（强制重新加载以应用新配置）
 	err = s.traderManager.LoadUserTraders(s.database, userID, true)
 	if err != nil {

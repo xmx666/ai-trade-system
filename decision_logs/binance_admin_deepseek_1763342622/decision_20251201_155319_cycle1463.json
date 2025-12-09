@@ -1,0 +1,41 @@
+{
+  "timestamp": "2025-12-01T15:53:19.2401742+08:00",
+  "cycle_number": 1463,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 108.35960522,
+    "available_balance": 81.32909921,
+    "total_unrealized_profit": -59.640394779999994,
+    "position_count": 1,
+    "margin_used_pct": 23.93445071917086
+  },
+  "positions": [
+    {
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "position_amt": 0.006,
+      "entry_price": 86213.4,
+      "mark_price": 86450.92103623,
+      "unrealized_profit": 1.42512621,
+      "leverage": 20,
+      "liquidation_price": 82274.93644578
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "SOLUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "HYPEUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 重试3次后仍然失败: 发送请求失败: Post \"https://api.deepseek.com/v1/chat/completions\": read tcp 172.21.0.2:60474-\u003e172.27.128.1:7890: read: connection reset by peer"
+}

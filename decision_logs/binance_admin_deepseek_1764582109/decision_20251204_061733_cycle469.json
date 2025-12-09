@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-12-04T06:17:33.940437474+08:00",
+  "cycle_number": 469,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 128.16394534,
+    "available_balance": 89.43390514,
+    "total_unrealized_profit": 19.163945339999998,
+    "position_count": 1,
+    "margin_used_pct": 29.20415714474603
+  },
+  "positions": [
+    {
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "position_amt": 0.004,
+      "entry_price": 93159.9,
+      "mark_price": 93573,
+      "unrealized_profit": 1.6524,
+      "leverage": 10,
+      "liquidation_price": 84227.39954819
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "ADAUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 读取响应失败: stream error: stream ID 39; INTERNAL_ERROR; received from peer"
+}

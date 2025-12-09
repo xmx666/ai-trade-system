@@ -1,0 +1,41 @@
+{
+  "timestamp": "2025-12-01T16:33:59.774401532+08:00",
+  "cycle_number": 1476,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 108.74871515000001,
+    "available_balance": 81.32909921,
+    "total_unrealized_profit": -59.25128484999999,
+    "position_count": 1,
+    "margin_used_pct": 23.867454400908382
+  },
+  "positions": [
+    {
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "position_amt": 0.006,
+      "entry_price": 86213.4,
+      "mark_price": 86518.5,
+      "unrealized_profit": 1.8306,
+      "leverage": 20,
+      "liquidation_price": 82277.67470884
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "SOLUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "HYPEUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 重试3次后仍然失败: 发送请求失败: Post \"https://api.deepseek.com/v1/chat/completions\": EOF"
+}

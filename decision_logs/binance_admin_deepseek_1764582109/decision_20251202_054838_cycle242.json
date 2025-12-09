@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-12-02T05:48:38.553912619+08:00",
+  "cycle_number": 242,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 0,
+    "available_balance": 0,
+    "total_unrealized_profit": 0,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": null,
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "构建交易上下文失败: 获取账户余额失败: 获取账户信息失败: Get \"https://fapi.binance.com/fapi/v2/account?timestamp=1764625713986\u0026signature=741b99b663984f40af9ff91364f2a62ce443c52ec4ddd9c823e0a1f0fd647c9d\": read tcp 172.21.0.2:47568-\u003e172.27.128.1:7890: read: connection reset by peer"
+}

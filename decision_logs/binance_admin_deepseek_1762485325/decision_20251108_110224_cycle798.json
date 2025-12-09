@@ -1,0 +1,71 @@
+{
+  "timestamp": "2025-11-08T11:02:24.214060437+08:00",
+  "cycle_number": 798,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 201.06835807,
+    "available_balance": 147.30094391,
+    "total_unrealized_profit": -17.931641930000012,
+    "position_count": 4,
+    "margin_used_pct": 26.731788496762128
+  },
+  "positions": [
+    {
+      "symbol": "HYPEUSDT",
+      "side": "short",
+      "position_amt": 4.1,
+      "entry_price": 42.851,
+      "mark_price": 42.76449394,
+      "unrealized_profit": 0.35467484,
+      "leverage": 19,
+      "liquidation_price": 89.9575351
+    },
+    {
+      "symbol": "SOLUSDT",
+      "side": "short",
+      "position_amt": 1.98,
+      "entry_price": 162.98,
+      "mark_price": 163.86183333,
+      "unrealized_profit": -1.74602999,
+      "leverage": 19,
+      "liquidation_price": 262.07098124
+    },
+    {
+      "symbol": "ETHUSDT",
+      "side": "short",
+      "position_amt": 0.099,
+      "entry_price": 3426.42,
+      "mark_price": 3443.11556589,
+      "unrealized_profit": -1.65286102,
+      "leverage": 19,
+      "liquidation_price": 5409.25488158
+    },
+    {
+      "symbol": "ADAUSDT",
+      "side": "short",
+      "position_amt": 308,
+      "entry_price": 0.5849,
+      "mark_price": 0.58631461,
+      "unrealized_profit": -0.43569988,
+      "leverage": 19,
+      "liquidation_price": 1.21765913
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "HYPEUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: API返回错误 (status 404): "
+}

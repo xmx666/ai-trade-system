@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-11-25T10:10:49.423816721+08:00",
+  "cycle_number": 10,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 0,
+    "available_balance": 0,
+    "total_unrealized_profit": 0,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": null,
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "构建交易上下文失败: 获取账户余额失败: 获取账户信息失败: Get \"https://fapi.binance.com/fapi/v2/account?timestamp=1764036639405\u0026signature=0cb6c212bdabfefe9e5a74fe78e6180f4b8123361d5ddc158cb9cbd3d40c948e\": net/http: TLS handshake timeout"
+}

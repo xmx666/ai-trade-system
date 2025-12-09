@@ -2,8 +2,15 @@ package trader
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -13,7 +20,9 @@ import (
 
 // FuturesTrader 币安合约交易器
 type FuturesTrader struct {
-	client *futures.Client
+	client    *futures.Client
+	apiKey    string // 保存API key用于签名
+	secretKey string // 保存Secret key用于签名
 
 	// 余额缓存
 	cachedBalance     map[string]interface{}
@@ -60,6 +69,8 @@ func NewFuturesTrader(apiKey, secretKey string) *FuturesTrader {
 	
 	return &FuturesTrader{
 		client:        client,
+		apiKey:        apiKey,    // 保存API key
+		secretKey:     secretKey, // 保存Secret key用于签名
 		cacheDuration: 15 * time.Second, // 15秒缓存
 		timeOffset:    timeOffset,
 	}
@@ -691,6 +702,129 @@ func (t *FuturesTrader) FormatQuantity(symbol string, quantity float64) (string,
 
 	format := fmt.Sprintf("%%.%df", precision)
 	return fmt.Sprintf(format, quantity), nil
+}
+
+// signRequest 对请求进行HMAC SHA256签名
+func (t *FuturesTrader) signRequest(query string) string {
+	mac := hmac.New(sha256.New, []byte(t.secretKey))
+	mac.Write([]byte(query))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// GetUserTrades 获取用户交易历史（从币安API直接获取真实交易记录）
+// symbol: 交易对，如 "BTCUSDT"，空字符串表示所有交易对（注意：币安API要求symbol必须指定）
+// limit: 返回的交易记录数量（最大1000）
+// startTime: 开始时间（可选）
+// endTime: 结束时间（可选）
+func (t *FuturesTrader) GetUserTrades(symbol string, limit int, startTime, endTime *time.Time) ([]map[string]interface{}, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000 // 币安API限制：最多1000条
+	}
+	
+	if symbol == "" {
+		return nil, fmt.Errorf("币安API要求必须指定交易对（symbol）")
+	}
+
+	// 使用HTTP请求直接调用币安API（因为go-binance库可能没有这个方法）
+	baseURL := "https://fapi.binance.com"
+	path := "/fapi/v1/userTrades"
+	
+	// 构建查询参数
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("limit", strconv.Itoa(limit))
+	if startTime != nil {
+		params.Set("startTime", strconv.FormatInt(startTime.UnixMilli(), 10))
+	}
+	if endTime != nil {
+		params.Set("endTime", strconv.FormatInt(endTime.UnixMilli(), 10))
+	}
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli()+t.timeOffset, 10))
+	
+	// 签名请求
+	queryString := params.Encode()
+	signature := t.signRequest(queryString)
+	params.Set("signature", signature)
+	
+	// 构建完整URL
+	fullURL := fmt.Sprintf("%s%s?%s", baseURL, path, params.Encode())
+	
+	// 创建HTTP请求
+	req, err := http.NewRequest("GET", fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建HTTP请求失败: %w", err)
+	}
+	
+	// 设置请求头
+	req.Header.Set("X-MBX-APIKEY", t.apiKey)
+	
+	// 发送请求
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("发送HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+	
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("币安API返回错误: %s (状态码: %d)", string(body), resp.StatusCode)
+	}
+	
+	// 解析JSON响应
+	var trades []struct {
+		Symbol          string `json:"symbol"`
+		ID              int64  `json:"id"`
+		OrderID         int64  `json:"orderId"`
+		Side            string `json:"side"`
+		PositionSide    string `json:"positionSide"`
+		Price           string `json:"price"`
+		Qty             string `json:"qty"`
+		QuoteQty        string `json:"quoteQty"`
+		Commission      string `json:"commission"`
+		CommissionAsset string `json:"commissionAsset"`
+		RealizedPnl     string `json:"realizedPnl"`
+		Time            int64  `json:"time"`
+	}
+	
+	if err := json.Unmarshal(body, &trades); err != nil {
+		return nil, fmt.Errorf("解析JSON响应失败: %w", err)
+	}
+	
+	// 转换为map格式
+	result := make([]map[string]interface{}, len(trades))
+	for i, trade := range trades {
+		price, _ := strconv.ParseFloat(trade.Price, 64)
+		qty, _ := strconv.ParseFloat(trade.Qty, 64)
+		quoteQty, _ := strconv.ParseFloat(trade.QuoteQty, 64)
+		commission, _ := strconv.ParseFloat(trade.Commission, 64)
+		realizedPnl, _ := strconv.ParseFloat(trade.RealizedPnl, 64)
+
+		result[i] = map[string]interface{}{
+			"symbol":          trade.Symbol,
+			"id":              trade.ID,
+			"order_id":        trade.OrderID,
+			"side":            trade.Side,           // "BUY" or "SELL"
+			"position_side":   trade.PositionSide,   // "LONG" or "SHORT"
+			"price":           price,
+			"qty":             qty,
+			"quote_qty":       quoteQty,
+			"commission":      commission,
+			"commission_asset": trade.CommissionAsset,
+			"realized_pnl":    realizedPnl,
+			"time":            trade.Time,
+			"time_in_ms":      trade.Time,
+		}
+	}
+
+	log.Printf("✓ 从币安API获取到 %d 条真实交易记录（symbol: %s）", len(result), symbol)
+	return result, nil
 }
 
 // 辅助函数

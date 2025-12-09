@@ -12,6 +12,15 @@ ARG NGINX_VERSION=alpine
 # Build Stage (Node)
 # ──────────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS builder
+
+# 配置代理（从构建参数传入）
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+ENV NO_PROXY=${NO_PROXY}
+
 WORKDIR /build
 
 COPY web/package*.json ./

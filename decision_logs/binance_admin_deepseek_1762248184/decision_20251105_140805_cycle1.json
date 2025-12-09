@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-11-05T14:08:05.229281805+08:00",
+  "cycle_number": 1,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 0,
+    "available_balance": 0,
+    "total_unrealized_profit": 0,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": null,
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "构建交易上下文失败: 获取账户余额失败: 获取账户信息失败: Get \"https://fapi.binance.com/fapi/v2/account?timestamp=1762322885228\u0026signature=aec76d89f316f245b2432a9cf18f121c34abbd2c2a7d30981885bc876ff1aee9\": proxyconnect tcp: dial tcp 172.17.0.1:7890: connect: connection refused"
+}

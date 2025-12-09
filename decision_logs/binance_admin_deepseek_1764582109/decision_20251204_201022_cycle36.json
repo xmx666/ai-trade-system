@@ -1,0 +1,36 @@
+{
+  "timestamp": "2025-12-04T20:10:22.286017557+08:00",
+  "cycle_number": 36,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 0,
+    "available_balance": 0,
+    "total_unrealized_profit": 0,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": null,
+  "decisions": [
+    {
+      "action": "close_long",
+      "symbol": "BTCUSDT",
+      "quantity": 0.008,
+      "leverage": 15,
+      "price": 92897.6,
+      "order_id": 0,
+      "timestamp": "2025-12-04T20:10:21.043191808+08:00",
+      "success": true,
+      "error": ""
+    }
+  ],
+  "execution_log": [
+    "🔔 自动检测到 BTCUSDT long 已平仓（可能是止损/止盈触发），平仓价: 92897.6000"
+  ],
+  "success": false,
+  "error_message": "构建交易上下文失败: 获取账户余额失败: 获取账户信息失败: \u003cAPIError\u003e code=-1021, msg=Timestamp for this request was 1000ms ahead of the server's time.",
+  "finish_reason": ""
+}

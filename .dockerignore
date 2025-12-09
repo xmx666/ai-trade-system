@@ -26,6 +26,9 @@ nofx_test
 # Test files
 *_test.go
 test_*
+predictor/*_test.go
+predictor/test_*.go
+scripts/test_*.go
 
 # Documentation
 *.md

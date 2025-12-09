@@ -1,0 +1,41 @@
+{
+  "timestamp": "2025-11-27T17:06:28.642259345+08:00",
+  "cycle_number": 63,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "**思维链分析：**\n\n**交易频率检查（首先，硬约束）**：\n- 最近1小时已交易次数：3次\n- 交易频率状态：≥2次，达到上限\n- **硬约束执行**：必须停止交易，等待下个小时\n- 交易频率限制：每小时最多2次交易，当前已超过限制\n\n**当前持仓评估（XRPUSDT LONG）**：\n- 持仓时间：58分钟（合理，超过最小持仓时间15-30分钟要求）\n- 当前盈利：+0.32%（保证金），价格+0.03%\n- 技术指标分析：\n  - 3分钟：RSI7=71.696（超买区域），MACD=-0.001（接近零轴但为负）\n  - 1小时：EMA20(2.206) \u003e EMA50(2.190)，但MACD持续下降",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 199.44460276,
+    "available_balance": 158.16374363,
+    "total_unrealized_profit": 31.44460276000001,
+    "position_count": 1,
+    "margin_used_pct": 20.750897078324126
+  },
+  "positions": [
+    {
+      "symbol": "XRPUSDT",
+      "side": "long",
+      "position_amt": 206.9,
+      "entry_price": 2.1997,
+      "mark_price": 2.20034793,
+      "unrealized_profit": 0.13405671,
+      "leverage": 11,
+      "liquidation_price": 2.01088151
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "SOLUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "HYPEUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 解析AI响应失败: 提取决策失败: JSON解析失败: invalid character 'â' after array element\nJSON内容: [0.011→0.003]"
+}

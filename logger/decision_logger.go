@@ -420,16 +420,32 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 				})
 
 			case "close_long", "close_short":
-				// 查找对应的开仓记录（可能来自预填充或当前窗口）
+				// ⚠️ 关键修复：查找对应的开仓记录（可能来自预填充或当前窗口）
 				// 使用FIFO策略：匹配最早的开仓记录
+				// 但也要考虑时间顺序：开仓时间必须在平仓时间之前
+				var matchedOpenPos map[string]interface{} = nil
 				if positions, exists := openPositions[posKey]; exists && len(positions) > 0 {
-					// 获取最早的开仓记录（列表的第一个）
-					openPos := positions[0]
-					openPrice := openPos["openPrice"].(float64)
-					openTime := openPos["openTime"].(time.Time)
-					side := openPos["side"].(string)
-					quantity := openPos["quantity"].(float64)
-					leverage := openPos["leverage"].(int)
+					// 查找在平仓时间之前最近的开仓记录
+					closeTime := action.Timestamp
+					for _, pos := range positions {
+						openTime := pos["openTime"].(time.Time)
+						// 开仓时间必须在平仓时间之前
+						if openTime.Before(closeTime) || openTime.Equal(closeTime) {
+							// 如果还没有找到，或者这个开仓记录更接近平仓时间，则使用这个
+							if matchedOpenPos == nil || openTime.After(matchedOpenPos["openTime"].(time.Time)) {
+								matchedOpenPos = pos
+							}
+						}
+					}
+				}
+				
+				if matchedOpenPos != nil {
+					// 获取匹配的开仓记录
+					openPrice := matchedOpenPos["openPrice"].(float64)
+					openTime := matchedOpenPos["openTime"].(time.Time)
+					side := matchedOpenPos["side"].(string)
+					quantity := matchedOpenPos["quantity"].(float64)
+					leverage := matchedOpenPos["leverage"].(int)
 
 						// 安全检查：确保杠杆至少为1，避免除以0或错误计算
 						if leverage <= 0 {
@@ -516,25 +532,39 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 						stats.LosingTrades++
 					}
 
-					// 移除已平仓记录（FIFO：移除最早的开仓记录）
-					openPositions[posKey] = positions[1:]
+					// 移除已平仓记录（移除匹配的开仓记录）
+					if positions, exists := openPositions[posKey]; exists {
+						// 从列表中移除匹配的开仓记录
+						newPositions := make([]map[string]interface{}, 0, len(positions))
+						for _, pos := range positions {
+							// 跳过匹配的开仓记录
+							if pos["openTime"].(time.Time) != matchedOpenPos["openTime"].(time.Time) ||
+								pos["openPrice"].(float64) != matchedOpenPos["openPrice"].(float64) {
+								newPositions = append(newPositions, pos)
+							}
+						}
+						openPositions[posKey] = newPositions
 					// 如果列表为空，删除key
 					if len(openPositions[posKey]) == 0 {
 						delete(openPositions, posKey)
+						}
 					}
 				} else {
 					// ⚠️ 未找到匹配的开仓记录（可能开仓记录在窗口外、手动开仓、或系统重启后丢失）
 					// 但为了确保所有平仓记录都能显示，我们尝试从币安API或历史记录中查找
 					// 如果仍然找不到，至少创建一个不完整的交易记录（标记为未知开仓）
 					
-					// 尝试从更大的历史窗口查找开仓记录
+					// ⚠️ 关键修复：尝试从更大的历史窗口查找开仓记录
 					// 使用时间顺序匹配：找到在平仓时间之前最近的开仓记录
-					extendedRecords, err := l.GetLatestRecords(lookbackCycles * 10) // 扩大10倍窗口
+					// 这对于止盈止损触发或手动平仓的情况非常重要
+					extendedRecords, err := l.GetLatestRecords(lookbackCycles * 20) // 扩大20倍窗口（确保能找到）
 					var foundOpenPos map[string]interface{} = nil
 					if err == nil {
-						// 从旧到新遍历，找到在平仓时间之前最近的开仓记录
+						// ⚠️ 关键：从新到旧遍历，找到在平仓时间之前最近的开仓记录
+						// 这样可以确保找到最接近平仓时间的开仓记录
 						closeTime := action.Timestamp
-						for _, extRecord := range extendedRecords {
+						for i := len(extendedRecords) - 1; i >= 0; i-- {
+							extRecord := extendedRecords[i]
 							for _, extAction := range extRecord.Decisions {
 								if !extAction.Success {
 									continue
@@ -566,8 +596,10 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 							}
 						}
 						if foundOpenPos != nil {
-							fmt.Printf("✅ 在扩展窗口中找到匹配的开仓记录 - Symbol: %s, Side: %s, OpenPrice: %.4f, OpenTime: %s\n",
-								symbol, side, foundOpenPos["openPrice"].(float64), foundOpenPos["openTime"].(time.Time).Format("2006-01-02 15:04:05"))
+							fmt.Printf("✅ 在扩展窗口中找到匹配的开仓记录 - Symbol: %s, Side: %s, OpenPrice: %.4f, OpenTime: %s, CloseTime: %s\n",
+								symbol, side, foundOpenPos["openPrice"].(float64), 
+								foundOpenPos["openTime"].(time.Time).Format("2006-01-02 15:04:05"),
+								action.Timestamp.Format("2006-01-02 15:04:05"))
 						}
 					}
 					
@@ -658,12 +690,14 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 							stats.LosingTrades++
 						}
 					} else {
-						// 仍然找不到开仓记录，记录警告但至少显示平仓信息
+						// ⚠️ 关键修复：仍然找不到开仓记录
+						// 这可能是手动平仓、止损触发或开仓记录在更早的历史中
 						fmt.Printf("⚠️  警告: 平仓记录未找到匹配的开仓记录 - Symbol: %s, Side: %s, ClosePrice: %.4f, Time: %s\n",
 							symbol, side, action.Price, action.Timestamp.Format("2006-01-02 15:04:05"))
-						fmt.Printf("  💡 提示: 这可能是手动平仓或止损触发，开仓记录可能在更早的历史中或已丢失\n")
-						// 注意：这种情况下仍然不会记录到 RecentTrades，因为缺少开仓信息无法计算盈亏
-						// 但至少系统会记录这个平仓操作，用户可以在币安查看完整信息
+						fmt.Printf("  💡 提示: 这可能是手动平仓、止损触发或开仓记录在更早的历史中\n")
+						fmt.Printf("  ⚠️  注意: 此平仓记录无法计算盈亏，请从币安查看完整交易信息\n")
+						// 注意：不创建不完整的交易记录，因为缺少开仓信息无法准确计算盈亏
+						// 用户应该从币安API查看完整信息（通过 /api/binance-trades 接口）
 					}
 				}
 			}

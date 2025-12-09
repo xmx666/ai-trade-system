@@ -1,0 +1,27 @@
+{
+  "timestamp": "2025-11-06T15:37:55.297609347+08:00",
+  "cycle_number": 52,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 92.92295714,
+    "available_balance": 92.92295714,
+    "total_unrealized_profit": 2.922957139999994,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: API返回错误 (status 500): {\"code\":50507,\"message\":\"Request processing has failed due to some unknown error.\",\"data\":null}"
+}

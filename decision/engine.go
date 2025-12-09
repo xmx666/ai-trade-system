@@ -138,7 +138,7 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 	}
 
 	// 4. 解析AI响应
-	decision, err := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
+	decision, err := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage, ctx.MarketDataMap)
 	if err != nil {
 		return decision, fmt.Errorf("解析AI响应失败: %w", err)
 	}
@@ -358,7 +358,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	// 2. 硬约束（风险控制）- 动态生成
 	startLen = sb.Len()
 	sb.WriteString("# 硬约束（风险控制）\n\n")
-	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
+	sb.WriteString("1. 风险回报比: 必须 ≥ 1:1.3（冒1%风险，赚1.3%+收益）\n")
 	sb.WriteString(fmt.Sprintf("2. **杠杆倍数配置（重要，必须严格遵守）**：\n"))
 	sb.WriteString(fmt.Sprintf("   - **BTC/ETH杠杆倍数**: %dx（必须使用此配置的杠杆，不能使用其他值）\n", btcEthLeverage))
 	sb.WriteString(fmt.Sprintf("   - **山寨币杠杆倍数**: %dx（必须使用此配置的杠杆，不能使用其他值）\n", altcoinLeverage))
@@ -706,7 +706,7 @@ func buildUserPrompt(ctx *Context) string {
 
 
 // parseFullDecisionResponse 解析AI的完整决策响应
-func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int) (*FullDecision, error) {
+func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int, marketDataMap map[string]*market.Data) (*FullDecision, error) {
 	// 1. 提取思维链
 	cotTrace := extractCoTTrace(aiResponse)
 
@@ -719,8 +719,8 @@ func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthL
 		}, fmt.Errorf("提取决策失败: %w", err)
 	}
 
-	// 3. 验证决策
-	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage); err != nil {
+	// 3. 验证决策（使用实际市场价格计算盈亏比）
+	if err := validateDecisionsWithMarketPrice(decisions, accountEquity, btcEthLeverage, altcoinLeverage, marketDataMap); err != nil {
 		return &FullDecision{
 			CoTTrace:  cotTrace,
 			Decisions: decisions,
@@ -957,6 +957,195 @@ func validateDecisions(decisions []Decision, accountEquity float64, btcEthLevera
 	return nil
 }
 
+// validateDecisionsWithMarketPrice 使用实际市场价格验证所有决策（更准确的盈亏比计算）
+func validateDecisionsWithMarketPrice(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, marketDataMap map[string]*market.Data) error {
+	for i, decision := range decisions {
+		// 先进行基本验证（不包含盈亏比验证）
+		if err := validateDecisionBasic(&decision, accountEquity, btcEthLeverage, altcoinLeverage); err != nil {
+			return fmt.Errorf("决策 #%d 验证失败: %w", i+1, err)
+		}
+
+		// 如果是开仓操作，使用实际市场价格计算盈亏比
+		if decision.Action == "open_long" || decision.Action == "open_short" {
+			// 获取实际市场价格
+			var currentPrice float64
+			if marketDataMap != nil {
+				if marketData, ok := marketDataMap[decision.Symbol]; ok && marketData != nil {
+					currentPrice = marketData.CurrentPrice
+				}
+			}
+
+			// 如果无法获取市场价格，尝试从market包获取
+			if currentPrice <= 0 {
+				if marketData, err := market.Get(decision.Symbol); err == nil {
+					currentPrice = marketData.CurrentPrice
+				}
+			}
+
+			if currentPrice > 0 {
+				// 使用实际市场价格计算盈亏比（考虑手续费和滑点）
+				if err := validateRiskRewardRatio(&decision, currentPrice); err != nil {
+					return fmt.Errorf("决策 #%d 盈亏比验证失败: %w", i+1, err)
+				}
+			} else {
+				// 如果无法获取市场价格，使用估算方式（但降低要求）
+				log.Printf("⚠️  无法获取 %s 的市场价格，使用估算方式验证盈亏比", decision.Symbol)
+				if err := validateRiskRewardRatioEstimated(&decision); err != nil {
+					return fmt.Errorf("决策 #%d 盈亏比验证失败: %w", i+1, err)
+			}
+		}
+	}
+	}
+	return nil
+}
+
+// validateDecisionBasic 基本验证（不包含盈亏比验证）
+func validateDecisionBasic(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int) error {
+	// 验证action
+	validActions := map[string]bool{
+		"open_long":   true,
+		"open_short":  true,
+		"close_long":  true,
+		"close_short": true,
+		"hold":        true,
+		"wait":        true,
+	}
+
+	if !validActions[d.Action] {
+		return fmt.Errorf("无效的action: %s", d.Action)
+	}
+
+	// 开仓操作必须提供完整参数
+	if d.Action == "open_long" || d.Action == "open_short" {
+		// 根据币种使用配置的杠杆上限
+		maxLeverage := altcoinLeverage
+		if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
+			maxLeverage = btcEthLeverage
+		}
+
+		if d.Leverage <= 0 || d.Leverage > maxLeverage {
+			return fmt.Errorf("杠杆必须在1-%d之间（%s，当前配置上限%d倍）: %d", maxLeverage, d.Symbol, maxLeverage, d.Leverage)
+		}
+		if d.PositionSizeUSD <= 0 {
+			return fmt.Errorf("仓位大小必须大于0: %.2f", d.PositionSizeUSD)
+		}
+		// 验证最小订单金额（币安要求订单名义价值 >= 20 USDT）
+		const minOrderNotional = 20.0
+		if d.PositionSizeUSD < minOrderNotional {
+			return fmt.Errorf("订单名义价值必须 >= %.0f USDT（币安最小限制），实际: %.2f USDT。请增加仓位大小或选择其他币种", minOrderNotional, d.PositionSizeUSD)
+		}
+		if d.StopLoss <= 0 || d.TakeProfit <= 0 {
+			return fmt.Errorf("止损和止盈必须大于0")
+		}
+
+		// 验证止损止盈的合理性
+		if d.Action == "open_long" {
+			if d.StopLoss >= d.TakeProfit {
+				return fmt.Errorf("做多时止损价必须小于止盈价")
+			}
+		} else {
+			if d.StopLoss <= d.TakeProfit {
+				return fmt.Errorf("做空时止损价必须大于止盈价")
+			}
+		}
+	}
+
+	return nil
+		}
+
+// validateRiskRewardRatio 使用实际市场价格验证盈亏比（考虑手续费和滑点）
+func validateRiskRewardRatio(d *Decision, currentPrice float64) error {
+	const feeRate = 0.0004  // 单边手续费0.04%
+	const slippageRate = 0.0005 // 滑点0.05%
+	const minRatio = 1.3
+
+	var riskAmount, rewardAmount float64
+
+	if d.Action == "open_long" {
+		// 做多：风险 = (入场价 - 止损价) + 开仓手续费 + 止损平仓手续费 + 滑点
+		priceDiff := currentPrice - d.StopLoss
+		riskAmount = priceDiff + currentPrice*(feeRate+slippageRate) + d.StopLoss*(feeRate+slippageRate)
+		
+		// 做多：收益 = (止盈价 - 入场价) - 开仓手续费 - 止盈平仓手续费 - 滑点
+		priceDiff = d.TakeProfit - currentPrice
+		rewardAmount = priceDiff - currentPrice*(feeRate+slippageRate) - d.TakeProfit*(feeRate+slippageRate)
+	} else {
+		// 做空：风险 = (止损价 - 入场价) + 开仓手续费 + 止损平仓手续费 + 滑点
+		priceDiff := d.StopLoss - currentPrice
+		riskAmount = priceDiff + currentPrice*(feeRate+slippageRate) + d.StopLoss*(feeRate+slippageRate)
+		
+		// 做空：收益 = (入场价 - 止盈价) - 开仓手续费 - 止盈平仓手续费 - 滑点
+		priceDiff = currentPrice - d.TakeProfit
+		rewardAmount = priceDiff - currentPrice*(feeRate+slippageRate) - d.TakeProfit*(feeRate+slippageRate)
+	}
+
+	// 计算实际盈亏比
+	if riskAmount <= 0 {
+		return fmt.Errorf("风险金额计算错误（≤0），无法计算盈亏比")
+	}
+
+	actualRatio := rewardAmount / riskAmount
+	if actualRatio < minRatio {
+		return fmt.Errorf("实际风险回报比过低(%.2f:1，已考虑手续费和滑点)，必须≥%.1f:1 [风险:%.4f 收益:%.4f] [当前价:%.4f 止损:%.4f 止盈:%.4f]",
+			actualRatio, minRatio, riskAmount, rewardAmount, currentPrice, d.StopLoss, d.TakeProfit)
+	}
+
+	// 验证止盈价格最小距离
+	minTakeProfitDistance := 1.5
+	if d.Leverage >= 15 {
+		minTakeProfitDistance = 2.0
+	}
+	
+	var takeProfitDistance float64
+	if d.Action == "open_long" {
+		takeProfitDistance = (d.TakeProfit - currentPrice) / currentPrice * 100
+	} else {
+		takeProfitDistance = (currentPrice - d.TakeProfit) / currentPrice * 100
+	}
+	
+	if takeProfitDistance < minTakeProfitDistance {
+		return fmt.Errorf("止盈价格距离入场价格太近(%.2f%%)，必须≥%.1f%%（防止过快止盈）。当前止盈:%.4f 当前价:%.4f 距离:%.2f%%",
+			takeProfitDistance, minTakeProfitDistance, d.TakeProfit, currentPrice, takeProfitDistance)
+	}
+
+	return nil
+}
+
+// validateRiskRewardRatioEstimated 使用估算方式验证盈亏比（当无法获取市场价格时）
+func validateRiskRewardRatioEstimated(d *Decision) error {
+	// 估算入场价（在止损和止盈之间）
+		var entryPrice float64
+		if d.Action == "open_long" {
+		entryPrice = d.StopLoss + (d.TakeProfit-d.StopLoss)*0.2
+		} else {
+		entryPrice = d.StopLoss - (d.StopLoss-d.TakeProfit)*0.2
+		}
+
+		var riskPercent, rewardPercent, riskRewardRatio float64
+		if d.Action == "open_long" {
+			riskPercent = (entryPrice - d.StopLoss) / entryPrice * 100
+			rewardPercent = (d.TakeProfit - entryPrice) / entryPrice * 100
+			if riskPercent > 0 {
+				riskRewardRatio = rewardPercent / riskPercent
+			}
+		} else {
+			riskPercent = (d.StopLoss - entryPrice) / entryPrice * 100
+			rewardPercent = (entryPrice - d.TakeProfit) / entryPrice * 100
+			if riskPercent > 0 {
+				riskRewardRatio = rewardPercent / riskPercent
+			}
+		}
+
+	// 估算方式降低要求（因为不准确）
+	const minRatio = 1.2
+	if riskRewardRatio < minRatio {
+		return fmt.Errorf("估算风险回报比过低(%.2f:1)，必须≥%.1f:1 [风险:%.2f%% 收益:%.2f%%] [止损:%.2f 止盈:%.2f]",
+			riskRewardRatio, minRatio, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
+		}
+
+	return nil
+}
+
 // findMatchingBracket 查找匹配的右括号
 func findMatchingBracket(s string, start int) int {
 	if start >= len(s) || s[start] != '[' {
@@ -1029,37 +1218,7 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 			}
 		}
 
-		// 验证风险回报比（必须≥1:3）
-		// 计算入场价（假设当前市价）
-		var entryPrice float64
-		if d.Action == "open_long" {
-			// 做多：入场价在止损和止盈之间
-			entryPrice = d.StopLoss + (d.TakeProfit-d.StopLoss)*0.2 // 假设在20%位置入场
-		} else {
-			// 做空：入场价在止损和止盈之间
-			entryPrice = d.StopLoss - (d.StopLoss-d.TakeProfit)*0.2 // 假设在20%位置入场
-		}
-
-		var riskPercent, rewardPercent, riskRewardRatio float64
-		if d.Action == "open_long" {
-			riskPercent = (entryPrice - d.StopLoss) / entryPrice * 100
-			rewardPercent = (d.TakeProfit - entryPrice) / entryPrice * 100
-			if riskPercent > 0 {
-				riskRewardRatio = rewardPercent / riskPercent
-			}
-		} else {
-			riskPercent = (d.StopLoss - entryPrice) / entryPrice * 100
-			rewardPercent = (entryPrice - d.TakeProfit) / entryPrice * 100
-			if riskPercent > 0 {
-				riskRewardRatio = rewardPercent / riskPercent
-			}
-		}
-
-		// 硬约束：风险回报比必须≥3.0
-		if riskRewardRatio < 3.0 {
-			return fmt.Errorf("风险回报比过低(%.2f:1)，必须≥3.0:1 [风险:%.2f%% 收益:%.2f%%] [止损:%.2f 止盈:%.2f]",
-				riskRewardRatio, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
-		}
+		// 注意：盈亏比验证已移至validateRiskRewardRatio函数，使用实际市场价格计算
 	}
 
 	return nil

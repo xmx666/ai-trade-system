@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-11-08T20:48:10.834402593+08:00",
+  "cycle_number": 1199,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 0,
+    "available_balance": 0,
+    "total_unrealized_profit": 0,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": null,
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "构建交易上下文失败: 获取账户余额失败: 获取账户信息失败: \u003cAPIError\u003e code=-1021, msg=Timestamp for this request was 1000ms ahead of the server's time."
+}

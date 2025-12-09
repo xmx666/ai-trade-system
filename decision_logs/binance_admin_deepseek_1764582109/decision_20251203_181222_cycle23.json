@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-12-03T18:12:22.429341594+08:00",
+  "cycle_number": 23,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 119.41917601,
+    "available_balance": 82.00911601,
+    "total_unrealized_profit": 10.419176010000001,
+    "position_count": 1,
+    "margin_used_pct": 31.180251986399554
+  },
+  "positions": [
+    {
+      "symbol": "BTCUSDT",
+      "side": "short",
+      "position_amt": 0.004,
+      "entry_price": 93170,
+      "mark_price": 93088,
+      "unrealized_profit": 0.328,
+      "leverage": 10,
+      "liquidation_price": 102032.38545817
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "ADAUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 读取响应失败: stream error: stream ID 21; INTERNAL_ERROR; received from peer"
+}

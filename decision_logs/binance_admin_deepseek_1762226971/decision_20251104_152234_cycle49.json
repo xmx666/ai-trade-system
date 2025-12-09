@@ -1,0 +1,58 @@
+{
+  "timestamp": "2025-11-04T15:22:34.83459553+08:00",
+  "cycle_number": 49,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 105.44471163,
+    "available_balance": 51.95515419,
+    "total_unrealized_profit": -4.5552883699999995,
+    "position_count": 3,
+    "margin_used_pct": 50.65433826941243
+  },
+  "positions": [
+    {
+      "symbol": "SOLUSDT",
+      "side": "short",
+      "position_amt": 0.9,
+      "entry_price": 158.64,
+      "mark_price": 157.95862281,
+      "unrealized_profit": 0.61323947,
+      "leverage": 9,
+      "liquidation_price": 270.65063918
+    },
+    {
+      "symbol": "BNBUSDT",
+      "side": "short",
+      "position_amt": 0.15,
+      "entry_price": 953.04,
+      "mark_price": 949.66,
+      "unrealized_profit": 0.507,
+      "leverage": 9,
+      "liquidation_price": 1625.81209824
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "short",
+      "position_amt": 0.005,
+      "entry_price": 104469.1,
+      "mark_price": 104586.20144928,
+      "unrealized_profit": -0.58550724,
+      "leverage": 24,
+      "liquidation_price": 124890.96814143
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 读取响应失败: stream error: stream ID 1; INTERNAL_ERROR; received from peer"
+}

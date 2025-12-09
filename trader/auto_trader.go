@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"nofx/decision"
 	"nofx/logger"
 	"nofx/market"
 	"nofx/mcp"
 	"nofx/pool"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -86,6 +89,7 @@ type AutoTrader struct {
 	mcpClient             *mcp.Client
 	decisionLogger        *logger.DecisionLogger // 决策日志记录器
 	predictionLogger      *logger.PredictionLogger // 预测验证日志记录器
+	tradeLogger           *logger.TradeLogger // 交易记录日志器
 	initialBalance        float64
 	dailyPnL              float64
 	customPrompt          string   // 自定义交易策略prompt
@@ -102,6 +106,7 @@ type AutoTrader struct {
 	previousPositions     map[string]map[string]interface{} // 上一个周期的持仓状态 (symbol_side -> position info)
 	// 移动止损相关字段
 	positionInitialStopLoss map[string]float64 // 持仓初始止损价格 (symbol_side -> stopLoss)
+	positionInitialTakeProfit map[string]float64 // 持仓初始止盈价格 (symbol_side -> takeProfit) - 保留最终目标
 	positionHighestProfit   map[string]float64  // 持仓最高盈利百分比 (symbol_side -> profitPct)
 	positionCurrentStopLoss map[string]float64  // 持仓当前止损价格 (symbol_side -> stopLoss)
 	positionHighestPrice    map[string]float64  // 持仓期间最高价格 (symbol_side -> price) 用于检测新高
@@ -204,6 +209,10 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 	predictionLogDir := fmt.Sprintf("prediction_logs/%s", config.ID)
 	predictionLogger := logger.NewPredictionLogger(predictionLogDir)
 
+	// 初始化交易记录日志器（使用trader ID创建独立目录）
+	tradeLogDir := fmt.Sprintf("trade_logs/%s", config.ID)
+	tradeLogger := logger.NewTradeLogger(tradeLogDir)
+
 	// 设置默认系统提示词模板
 	systemPromptTemplate := config.SystemPromptTemplate
 	if systemPromptTemplate == "" {
@@ -220,6 +229,7 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 		mcpClient:             mcpClient,
 		decisionLogger:        decisionLogger,
 		predictionLogger:      predictionLogger,
+		tradeLogger:           tradeLogger,
 		initialBalance:        config.InitialBalance,
 		systemPromptTemplate:  systemPromptTemplate,
 		defaultCoins:          config.DefaultCoins,
@@ -230,6 +240,7 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 		isRunning:                false,
 		positionFirstSeenTime:    make(map[string]int64),
 		positionInitialStopLoss:  make(map[string]float64),
+		positionInitialTakeProfit: make(map[string]float64),
 		positionHighestProfit:    make(map[string]float64),
 		positionCurrentStopLoss:  make(map[string]float64),
 		positionHighestPrice:    make(map[string]float64),
@@ -245,24 +256,62 @@ func (at *AutoTrader) Run() error {
 	log.Printf("⚙️  扫描间隔: %v", at.config.ScanInterval)
 	log.Println("🤖 AI将全权决定杠杆、仓位大小、止损止盈等参数")
 
+	// 启动时同步币安交易记录（仅币安交易所）
+	if at.exchange == "binance" {
+		log.Println("📥 正在同步币安交易记录...")
+		if err := at.syncBinanceTrades(); err != nil {
+			log.Printf("⚠️  同步币安交易记录失败: %v（将继续运行）", err)
+		} else {
+			log.Println("✓ 币安交易记录同步完成")
+		}
+	}
+
 	ticker := time.NewTicker(at.config.ScanInterval)
 	defer ticker.Stop()
 
-	// 首次立即执行
+	// 首次立即执行（带panic恢复）
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("❌ [PANIC恢复] 首次执行发生panic: %v", r)
+				log.Printf("   堆栈信息: %s", getStackTrace())
+			}
+		}()
 	if err := at.runCycle(); err != nil {
 		log.Printf("❌ 执行失败: %v", err)
 	}
+	}()
 
 	for at.isRunning {
 		select {
 		case <-ticker.C:
+			// 使用panic恢复机制，防止单个周期错误导致整个循环停止
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("❌ [PANIC恢复] 交易周期发生panic: %v", r)
+						log.Printf("   堆栈信息: %s", getStackTrace())
+						log.Printf("   交易循环将继续运行，等待下一个周期...")
+						// panic后继续运行，不退出循环
+					}
+				}()
 			if err := at.runCycle(); err != nil {
 				log.Printf("❌ 执行失败: %v", err)
+					// 错误后继续运行，不退出循环
 			}
+			}()
 		}
 	}
 
+	log.Println("⏹ 交易循环已退出")
 	return nil
+}
+
+// getStackTrace 获取堆栈跟踪信息
+func getStackTrace() string {
+	buf := make([]byte, 4096)
+	n := runtime.Stack(buf, false)
+	return string(buf[:n])
 }
 
 // Stop 停止自动交易
@@ -873,6 +922,33 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	}
 	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
 		log.Printf("  ⚠ 设置止盈失败: %v", err)
+	} else {
+		// 记录初始止盈价格（最终目标，让利润继续奔跑）
+		at.positionInitialTakeProfit[posKey] = decision.TakeProfit
+		log.Printf("  📝 记录初始止盈价格（最终目标）: %.4f", decision.TakeProfit)
+	}
+
+	// ⚠️ 关键：记录开仓交易到本地文件
+	if at.tradeLogger != nil {
+		orderID := int64(0)
+		if id, ok := order["orderId"].(int64); ok {
+			orderID = id
+		}
+		_, err := at.tradeLogger.RecordOpenTrade(
+			decision.Symbol,
+			"long",
+			actionRecord.Price,
+			actionRecord.Quantity,
+			decision.Leverage,
+			orderID,
+			decision.StopLoss,
+			decision.TakeProfit,
+		)
+		if err != nil {
+			log.Printf("  ⚠️ 记录开仓交易失败: %v", err)
+		} else {
+			log.Printf("  ✅ 开仓交易已记录到本地文件")
+		}
 	}
 
 	return nil
@@ -1019,6 +1095,33 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	}
 	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
 		log.Printf("  ⚠ 设置止盈失败: %v", err)
+	} else {
+		// 记录初始止盈价格（最终目标，让利润继续奔跑）
+		at.positionInitialTakeProfit[posKey] = decision.TakeProfit
+		log.Printf("  📝 记录初始止盈价格（最终目标）: %.4f", decision.TakeProfit)
+	}
+
+	// ⚠️ 关键：记录开仓交易到本地文件
+	if at.tradeLogger != nil {
+		orderID := int64(0)
+		if id, ok := order["orderId"].(int64); ok {
+			orderID = id
+		}
+		_, err := at.tradeLogger.RecordOpenTrade(
+			decision.Symbol,
+			"short",
+			actionRecord.Price,
+			actionRecord.Quantity,
+			decision.Leverage,
+			orderID,
+			decision.StopLoss,
+			decision.TakeProfit,
+		)
+		if err != nil {
+			log.Printf("  ⚠️ 记录开仓交易失败: %v", err)
+		} else {
+			log.Printf("  ✅ 开仓交易已记录到本地文件")
+		}
 	}
 
 	return nil
@@ -1073,6 +1176,28 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *decision.Decision, ac
 	}
 
 	log.Printf("  ✓ 平仓成功，平仓价格: %.4f", actionRecord.Price)
+
+	// ⚠️ 关键：更新平仓交易记录到本地文件
+	if at.tradeLogger != nil {
+		orderID := int64(0)
+		if id, ok := order["orderId"].(int64); ok {
+			orderID = id
+		}
+		_, err := at.tradeLogger.UpdateCloseTrade(
+			decision.Symbol,
+			"long",
+			actionRecord.Price,
+			actionRecord.Quantity,
+			"ai_decision", // AI决策平仓
+			orderID,
+		)
+		if err != nil {
+			log.Printf("  ⚠️ 更新平仓交易记录失败: %v", err)
+		} else {
+			log.Printf("  ✅ 平仓交易已更新到本地文件")
+		}
+	}
+
 	return nil
 }
 
@@ -1192,6 +1317,28 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *decision.Decision, a
 	}
 
 	log.Printf("  ✓ 平仓成功，平仓价格: %.4f", actionRecord.Price)
+
+	// ⚠️ 关键：更新平仓交易记录到本地文件
+	if at.tradeLogger != nil {
+		orderID := int64(0)
+		if id, ok := order["orderId"].(int64); ok {
+			orderID = id
+		}
+		_, err := at.tradeLogger.UpdateCloseTrade(
+			decision.Symbol,
+			"short",
+			actionRecord.Price,
+			actionRecord.Quantity,
+			"ai_decision", // AI决策平仓
+			orderID,
+		)
+		if err != nil {
+			log.Printf("  ⚠️ 更新平仓交易记录失败: %v", err)
+		} else {
+			log.Printf("  ✅ 平仓交易已更新到本地文件")
+		}
+	}
+
 	return nil
 }
 
@@ -1250,6 +1397,11 @@ func (at *AutoTrader) GetSystemPromptTemplate() string {
 // GetDecisionLogger 获取决策日志记录器
 func (at *AutoTrader) GetDecisionLogger() *logger.DecisionLogger {
 	return at.decisionLogger
+}
+
+// GetTradeLogger 获取交易记录日志器
+func (at *AutoTrader) GetTradeLogger() *logger.TradeLogger {
+	return at.tradeLogger
 }
 
 // GetStatus 获取系统状态（用于API）
@@ -1588,45 +1740,95 @@ func (at *AutoTrader) detectAndRecordPositionChanges(record *logger.DecisionReco
 				Success:   true,
 			}
 			
-			// 尝试从历史记录中查找对应的开仓记录，补充开仓信息
-			// 这样即使开仓记录在窗口外，也能正确匹配
+			// ⚠️ 关键修复：尝试从历史记录中查找对应的开仓记录，补充完整的开仓信息
+			// 这样即使开仓记录在窗口外，也能正确匹配和计算盈亏
 			if at.decisionLogger != nil {
 				// 获取最近的历史记录，查找匹配的开仓记录
-				recentRecords, err := at.decisionLogger.GetLatestRecords(1000) // 查找最近1000个周期
+				// 使用更大的窗口（5000个周期）来查找开仓记录
+				recentRecords, err := at.decisionLogger.GetLatestRecords(5000)
 				if err == nil {
-					// 从新到旧遍历，找到最近的开仓记录
+					// 从新到旧遍历，找到最近的开仓记录（在平仓时间之前）
+					closeTime := actionRecord.Timestamp
+					var foundOpenAction *logger.DecisionAction = nil
+					
 					for i := len(recentRecords) - 1; i >= 0; i-- {
 						record := recentRecords[i]
 						for _, prevAction := range record.Decisions {
 							if !prevAction.Success {
 								continue
 							}
-							// 查找匹配的开仓记录
+							// 查找匹配的开仓记录（必须在平仓时间之前）
 							if (prevAction.Symbol == symbol) &&
 								((side == "long" && prevAction.Action == "open_long") ||
-									(side == "short" && prevAction.Action == "open_short")) {
-								// 找到匹配的开仓记录，但这里已经记录了平仓，不需要额外操作
-								// 因为 AnalyzePerformance 会从历史记录中匹配
-								log.Printf("  📋 找到匹配的开仓记录: %s %s 开仓价 %.4f, 开仓时间: %s",
-									symbol, side, prevAction.Price, prevAction.Timestamp.Format("2006-01-02 15:04:05"))
-								break
+									(side == "short" && prevAction.Action == "open_short")) &&
+								prevAction.Timestamp.Before(closeTime) {
+								// 如果还没有找到，或者这个开仓记录更接近平仓时间，则使用这个
+								if foundOpenAction == nil || prevAction.Timestamp.After(foundOpenAction.Timestamp) {
+									foundOpenAction = &prevAction
+								}
 							}
 						}
+					}
+					
+					if foundOpenAction != nil {
+						// 找到匹配的开仓记录，更新平仓记录的开仓信息
+						log.Printf("  📋 找到匹配的开仓记录: %s %s 开仓价 %.4f, 开仓时间: %s, 数量: %.4f, 杠杆: %dx",
+							symbol, side, foundOpenAction.Price, foundOpenAction.Timestamp.Format("2006-01-02 15:04:05"),
+							foundOpenAction.Quantity, foundOpenAction.Leverage)
+						
+						// ⚠️ 关键修复：使用找到的开仓记录的信息更新平仓记录
+						// 这样 AnalyzePerformance 能够正确匹配开仓和平仓
+						if foundOpenAction.Quantity > 0 {
+							actionRecord.Quantity = foundOpenAction.Quantity
+						}
+						if foundOpenAction.Leverage > 0 {
+							actionRecord.Leverage = foundOpenAction.Leverage
+						}
+						// 注意：actionRecord.Price 是平仓价格，不应该改
+						// 但是 entryPrice 应该使用找到的开仓价格，而不是从 prevPos 中获取的
+						// 因为从历史记录中找到的开仓价格更准确
+						entryPrice = foundOpenAction.Price
+					} else {
+						log.Printf("  ⚠️  未找到匹配的开仓记录: %s %s (可能是手动开仓或开仓记录在窗口外)，使用持仓中的入场价: %.4f",
+							symbol, side, entryPrice)
 					}
 				}
 			}
 
-			// 记录到决策记录中
+			// ⚠️ 关键修复：记录到决策记录中，确保在AI决策之前记录
+			// 这样 AnalyzePerformance 能够正确匹配开仓和平仓
 			record.Decisions = append(record.Decisions, actionRecord)
+			
+			// 判断是止损还是止盈（基于盈亏）
+			reason := "未知"
+			if entryPrice > 0 && marketData.CurrentPrice > 0 {
+				if side == "long" {
+					if marketData.CurrentPrice < entryPrice {
+						reason = "止损触发"
+					} else {
+						reason = "止盈触发"
+					}
+				} else {
+					if marketData.CurrentPrice > entryPrice {
+						reason = "止损触发"
+					} else {
+						reason = "止盈触发"
+					}
+				}
+			}
+			
 			record.ExecutionLog = append(record.ExecutionLog, 
-				fmt.Sprintf("🔔 自动检测到 %s %s 已平仓（可能是止损/止盈触发），平仓价: %.4f", symbol, side, marketData.CurrentPrice))
+				fmt.Sprintf("🔔 自动检测到 %s %s 已平仓（%s），入场价: %.4f, 平仓价: %.4f", 
+					symbol, side, reason, entryPrice, marketData.CurrentPrice))
 
-			log.Printf("🔔 检测到持仓变化: %s %s 已平仓（可能是止损/止盈触发），入场价: %.4f, 平仓价: %.4f",
-				symbol, side, entryPrice, marketData.CurrentPrice)
+			log.Printf("🔔 检测到持仓变化: %s %s 已平仓（%s），入场价: %.4f, 平仓价: %.4f, 数量: %.4f, 杠杆: %dx",
+				symbol, side, reason, entryPrice, marketData.CurrentPrice, actionRecord.Quantity, actionRecord.Leverage)
 
 			// 清理移动止损相关记录
 			posKey := symbol + "_" + side
 			delete(at.positionInitialStopLoss, posKey)
+			delete(at.positionInitialTakeProfit, posKey)
+			delete(at.positionInitialTakeProfit, posKey+"_dynamic") // 清理动态止盈记录
 			delete(at.positionHighestProfit, posKey)
 			delete(at.positionCurrentStopLoss, posKey)
 			delete(at.positionHighestPrice, posKey)
@@ -1761,12 +1963,31 @@ func (at *AutoTrader) checkAndAdjustTrailingStopLoss(record *logger.DecisionReco
 			continue // 新持仓，等待下次周期再检查
 		}
 
+		// ⚠️ 关键：检查持仓时间，避免刚开仓几分钟就平仓
+		// 持仓时间必须至少15-30分钟，除非趋势真正反转或触发止损/止盈
+		firstSeenTime, hasFirstSeenTime := at.positionFirstSeenTime[posKey]
+		if hasFirstSeenTime {
+			positionDuration := time.Now().UnixMilli() - firstSeenTime
+			minHoldDuration := int64(15 * 60 * 1000) // 15分钟（毫秒），转换为int64
+			if positionDuration < minHoldDuration {
+				log.Printf("  ⏭️  %s %s 持仓时间过短（%.1f分钟 < 15分钟），跳过移动止损检查，避免过早平仓",
+					symbol, side, float64(positionDuration)/(60*1000))
+				continue // 持仓时间过短，跳过检查，避免过早平仓
+			}
+		}
+
 		entryPrice, ok1 := pos["entryPrice"].(float64)
 		markPrice, ok2 := pos["markPrice"].(float64)
 		quantity, ok3 := pos["positionAmt"].(float64)
 		if !ok1 || !ok2 || !ok3 || entryPrice <= 0 || markPrice <= 0 || quantity <= 0 {
 			log.Printf("  ⚠️  %s %s 持仓数据不完整，跳过移动止损检查", symbol, side)
 			continue
+		}
+
+		// 获取杠杆倍数（从持仓信息中获取）
+		leverage := 10 // 默认值
+		if lev, ok := pos["leverage"].(float64); ok {
+			leverage = int(lev)
 		}
 
 		// 计算当前盈利百分比（基于价格变化，与杠杆无关）
@@ -1780,14 +2001,46 @@ func (at *AutoTrader) checkAndAdjustTrailingStopLoss(record *logger.DecisionReco
 			currentProfitPct = ((entryPrice - markPrice) / entryPrice) * 100
 		}
 
-		// 更新最高盈利记录（价格百分比）
-		if currentProfitPct > at.positionHighestProfit[posKey] {
-			at.positionHighestProfit[posKey] = currentProfitPct
-			log.Printf("  📈 %s %s 更新最高盈利记录: %.2f%%", symbol, side, currentProfitPct)
+		// ⚠️ 关键：计算相对于保证金的盈利百分比（考虑杠杆）
+		// 用于判断是否达到盈利目标（目标价格涨幅 × 杠杆）
+		var currentProfitPctWithLeverage float64
+		if leverage > 0 {
+			currentProfitPctWithLeverage = currentProfitPct * float64(leverage)
+		} else {
+			currentProfitPctWithLeverage = currentProfitPct // 如果杠杆未知，使用价格百分比
 		}
 
+		// ⚠️ 关键：计算相对于初始止盈目标的进度
+		// 盈利达标 = (当前价格 - 入场价) / (止盈价 - 入场价) × 100%
+		// 然后乘以杠杆，得到相对于保证金的盈利进度
+		var progressToTarget float64 = 0.0
+		var targetProfitPctWithLeverage float64 = 0.0
+		initialTakeProfit, hasInitialTakeProfit := at.positionInitialTakeProfit[posKey]
+		if hasInitialTakeProfit && initialTakeProfit > 0 {
+			var targetDistance float64
+			if side == "long" {
+				targetDistance = ((initialTakeProfit - entryPrice) / entryPrice) * 100
+				if targetDistance > 0 {
+					progressToTarget = (currentProfitPct / targetDistance) * 100 // 当前盈利 / 目标盈利 × 100%
+				}
+			} else {
+				targetDistance = ((entryPrice - initialTakeProfit) / entryPrice) * 100
+				if targetDistance > 0 {
+					progressToTarget = (currentProfitPct / targetDistance) * 100
+				}
+			}
+			// 计算目标盈利（考虑杠杆）：目标价格涨幅 × 杠杆倍数
+			if leverage > 0 {
+				targetProfitPctWithLeverage = targetDistance * float64(leverage)
+			}
+		}
+
+		// 记录盈利信息（用于日志和AI决策）
+		log.Printf("  📊 %s %s 盈利分析: 价格盈利%.2f%%, 保证金盈利%.2f%% (杠杆%dx), 目标进度%.1f%%, 目标保证金盈利%.2f%%",
+			symbol, side, currentProfitPct, currentProfitPctWithLeverage, leverage, progressToTarget, targetProfitPctWithLeverage)
+
 		// 检测价格是否创新高/新低，并更新记录
-		// ⚠️ 关键：每次价格创新高/新低时，重新计算并设置止损单
+		// ⚠️ 关键：每次价格创新高/新低时，重新计算并设置止损单和止盈单
 		isNewHigh := false
 		isNewLow := false
 		
@@ -1824,6 +2077,62 @@ func (at *AutoTrader) checkAndAdjustTrailingStopLoss(record *logger.DecisionReco
 			}
 		}
 
+		// 更新最高盈利记录（价格百分比）
+		// ⚠️ 关键：当价格创新高/新低时，同时更新最高盈利记录和动态止盈单
+		oldHighestProfit := at.positionHighestProfit[posKey]
+		if currentProfitPct > oldHighestProfit {
+			at.positionHighestProfit[posKey] = currentProfitPct
+			log.Printf("  📈 %s %s 更新最高盈利记录: %.2f%% (之前: %.2f%%)", symbol, side, currentProfitPct, oldHighestProfit)
+			
+			// ⚠️ 关键改进：在达到最高盈利点时立即更新止盈单，而不是等回撤后再设置
+			// 这样可以在价格回撤时及时锁定利润
+			if currentProfitPct > 0 {
+				// 计算动态止盈价格：在当前价格基础上，给一点缓冲（0.2%），确保能成交
+				var dynamicTakeProfitPrice float64
+				if side == "long" {
+					// 做多：止盈价 = 当前价 × 0.998，略低于当前价确保成交
+					dynamicTakeProfitPrice = markPrice * 0.998
+				} else {
+					// 做空：止盈价 = 当前价 × 1.002，略高于当前价确保成交
+					dynamicTakeProfitPrice = markPrice * 1.002
+				}
+				
+				// 检查是否已经有动态止盈记录，避免频繁更新
+				dynamicTPKey := posKey + "_dynamic"
+				existingDynamicTP, hasDynamicTP := at.positionInitialTakeProfit[dynamicTPKey]
+				
+				// 如果新的动态止盈价优于现有价格（做多时更高，做空时更低），则更新
+				shouldUpdate := false
+				if !hasDynamicTP {
+					shouldUpdate = true
+				} else if side == "long" && dynamicTakeProfitPrice > existingDynamicTP {
+					shouldUpdate = true
+				} else if side == "short" && dynamicTakeProfitPrice < existingDynamicTP {
+					shouldUpdate = true
+				}
+				
+				if shouldUpdate {
+					log.Printf("  🎯 %s %s 价格创新高/新低，更新动态止盈单至%.4f锁定利润（当前盈利%.2f%%）",
+						symbol, side, dynamicTakeProfitPrice, currentProfitPct)
+					
+					// 更新止盈单
+					if err := at.trader.SetTakeProfit(symbol, strings.ToUpper(side), quantity, dynamicTakeProfitPrice); err != nil {
+						log.Printf("  ❌ %s %s 更新动态止盈单失败: %v", symbol, side, err)
+						record.ExecutionLog = append(record.ExecutionLog,
+							fmt.Sprintf("❌ %s %s 更新动态止盈单失败: %v", symbol, side, err))
+					} else {
+						// 记录动态止盈价格（用于下次检查，避免频繁更新）
+						at.positionInitialTakeProfit[dynamicTPKey] = dynamicTakeProfitPrice
+						log.Printf("  ✅ %s %s 动态止盈单已更新至%.4f（初始止盈目标: %.4f）",
+							symbol, side, dynamicTakeProfitPrice, at.positionInitialTakeProfit[posKey])
+						record.ExecutionLog = append(record.ExecutionLog,
+							fmt.Sprintf("✅ %s %s 价格创新高/新低，动态止盈单已更新至%.4f（盈利%.2f%%）",
+								symbol, side, dynamicTakeProfitPrice, currentProfitPct))
+					}
+				}
+			}
+		}
+
 		// 计算止损距离（价格百分比，与杠杆无关）
 		// 止损距离 = |入场价 - 初始止损价| / 入场价 × 100%
 		var stopLossDistancePct float64
@@ -1842,18 +2151,20 @@ func (at *AutoTrader) checkAndAdjustTrailingStopLoss(record *logger.DecisionReco
 			currentStopLoss = initialStopLoss
 		}
 
-		// 检查回撤保护（最高优先级）
+		// 注意：动态止盈逻辑已合并到价格创新高/新低的检查中（见上方）
+		// 当价格创新高/新低时，会立即更新止盈单到当前价格附近，锁定利润
+
+		// 检查回撤保护（调整止损，不直接止盈）
 		// 回撤 = 最高盈利（价格百分比） - 当前盈利（价格百分比）
 		// 回撤阈值 = 止损距离（价格百分比） × 1.5
-		highestProfit := at.positionHighestProfit[posKey]
 		drawdownThreshold := stopLossDistancePct * 1.5 // 止损距离的1.5倍（价格百分比）
+		
+		// 获取最高盈利记录
+		highestProfit := at.positionHighestProfit[posKey]
+		
+		// 计算回撤（从最高盈利点回撤的幅度）
 		drawdown := highestProfit - currentProfitPct
 
-		log.Printf("  📊 %s %s 移动止损检查: 当前盈利%.2f%%, 最高盈利%.2f%%, 回撤%.2f%%, 阈值%.2f%%, 止损距离%.2f%%, 当前止损%.4f",
-			symbol, side, currentProfitPct, highestProfit, drawdown, drawdownThreshold, stopLossDistancePct, currentStopLoss)
-
-		// ⚠️ 关键修复：只要曾经盈利过（highestProfit > 0），且回撤超过阈值，就触发保护
-		// 即使当前已经亏损（currentProfitPct < 0），也应该触发保护
 		// ⚠️ 关键修复：只要曾经盈利过（highestProfit > 0），且回撤超过阈值，就触发保护
 		// 即使当前已经亏损（currentProfitPct < 0），也应该触发保护
 		if drawdown > drawdownThreshold && highestProfit > 0 {
@@ -1977,23 +2288,20 @@ func (at *AutoTrader) checkAndAdjustTrailingStopLoss(record *logger.DecisionReco
 			if shouldRecalc {
 				// 检查新止损价是否优于当前止损价
 				if (side == "long" && recalculatedStopLoss > currentStopLoss) || (side == "short" && recalculatedStopLoss < currentStopLoss) {
-					// 先取消旧的止损单（如果存在）
-					if err := at.trader.CancelAllOrders(symbol); err != nil {
-						log.Printf("  ⚠️  %s 取消旧止损单失败（可能不存在）: %v", symbol, err)
-					}
-					
-					// 设置新的止损单
+					// ⚠️ 关键：直接设置新的止损单，不取消所有订单
+					// 交易所通常会自动替换旧的止损单，同时保留止盈单
+					// 这样既能锁定利润（通过调整止损），又能保留初始止盈目标（让利润继续奔跑）
 					if err := at.trader.SetStopLoss(symbol, strings.ToUpper(side), quantity, recalculatedStopLoss); err != nil {
 						log.Printf("  ❌ %s %s 价格创新高/新低后重新设置止损失败: %v", symbol, side, err)
 						record.ExecutionLog = append(record.ExecutionLog,
 							fmt.Sprintf("❌ %s %s 价格创新高/新低后重新设置止损失败: %v", symbol, side, err))
 					} else {
 						at.positionCurrentStopLoss[posKey] = recalculatedStopLoss
-						log.Printf("  🔄 %s %s 价格创新高/新低，重新设置止损 %s: 当前盈利%.2f%%, %.4f → %.4f",
-							symbol, side, recalcStage, currentProfitPct, currentStopLoss, recalculatedStopLoss)
+						log.Printf("  🔄 %s %s 价格创新高/新低，重新设置止损 %s: 当前盈利%.2f%%, %.4f → %.4f (保留初始止盈目标: %.4f)",
+							symbol, side, recalcStage, currentProfitPct, currentStopLoss, recalculatedStopLoss, at.positionInitialTakeProfit[posKey])
 						record.ExecutionLog = append(record.ExecutionLog,
-							fmt.Sprintf("🔄 %s %s 价格创新高/新低，重新设置止损 %s: %.4f → %.4f",
-								symbol, side, recalcStage, currentStopLoss, recalculatedStopLoss))
+							fmt.Sprintf("🔄 %s %s 价格创新高/新低，重新设置止损 %s: %.4f → %.4f (保留初始止盈: %.4f)",
+								symbol, side, recalcStage, currentStopLoss, recalculatedStopLoss, at.positionInitialTakeProfit[posKey]))
 					}
 					continue // 已处理，跳过常规移动止损检查
 				} else {
@@ -2006,9 +2314,17 @@ func (at *AutoTrader) checkAndAdjustTrailingStopLoss(record *logger.DecisionReco
 		// 常规移动止损检查（基于盈利阶段，所有计算基于价格百分比）
 		// ⚠️ 注意：这里的"盈利"是指价格变化百分比，不是保证金百分比
 		// 例如：入场价100，当前价104，盈利4%（无论杠杆倍数）
+		// ⚠️ 关键：移动止损只调整止损价格，不直接平仓
+		// 只有在AI判断趋势反转时，才会通过close_long/close_short强制平仓
 		var newStopLoss float64
 		var stage string
 		var shouldAdjust bool
+
+		// ⚠️ 关键改进：盈利达标判断应该考虑杠杆和目标价格
+		// 盈利达标 = (当前价格相对于目标价格的进度) × 杠杆倍数
+		// 例如：目标盈利5%，当前进度80%，杠杆10x → 实际盈利 = 5% × 80% × 10 = 40%
+		// 只有当实际盈利达到预期（如20%）且趋势反转时，才考虑平仓
+		// 否则，只调整止损和止盈单，让利润继续奔跑
 
 		if currentProfitPct >= stopLossDistancePct*6 {
 			// 阶段4：锁定85%利润（基于价格变化）
@@ -2066,23 +2382,20 @@ func (at *AutoTrader) checkAndAdjustTrailingStopLoss(record *logger.DecisionReco
 		if shouldAdjust {
 			// 检查新止损价是否优于当前止损价（做多时只能上移，做空时只能下移）
 			if (side == "long" && newStopLoss > currentStopLoss) || (side == "short" && newStopLoss < currentStopLoss) {
-				// 先取消旧的止损单（如果存在），确保重新设置
-				if err := at.trader.CancelAllOrders(symbol); err != nil {
-					log.Printf("  ⚠️  %s 取消旧止损单失败（可能不存在）: %v", symbol, err)
-				}
-				
-				// 设置新的止损单
+				// ⚠️ 关键：直接设置新的止损单，不取消所有订单
+				// 交易所通常会自动替换旧的止损单，同时保留止盈单
+				// 这样既能锁定利润（通过调整止损），又能保留初始止盈目标（让利润继续奔跑）
 				if err := at.trader.SetStopLoss(symbol, strings.ToUpper(side), quantity, newStopLoss); err != nil {
 					log.Printf("  ❌ %s %s 调整止损失败: %v", symbol, side, err)
 					record.ExecutionLog = append(record.ExecutionLog,
 						fmt.Sprintf("❌ %s %s 移动止损调整失败: %v", symbol, side, err))
 				} else {
 					at.positionCurrentStopLoss[posKey] = newStopLoss
-					log.Printf("  ✅ %s %s 移动止损已调整 %s: 当前盈利%.2f%%, 止损距离%.2f%%, %.4f → %.4f",
-						symbol, side, stage, currentProfitPct, stopLossDistancePct, currentStopLoss, newStopLoss)
+					log.Printf("  ✅ %s %s 移动止损已调整 %s: 当前盈利%.2f%%, 止损距离%.2f%%, %.4f → %.4f (保留初始止盈目标: %.4f)",
+						symbol, side, stage, currentProfitPct, stopLossDistancePct, currentStopLoss, newStopLoss, at.positionInitialTakeProfit[posKey])
 					record.ExecutionLog = append(record.ExecutionLog,
-						fmt.Sprintf("✅ %s %s 移动止损已调整 %s: 盈利%.2f%%, %.4f → %.4f",
-							symbol, side, stage, currentProfitPct, currentStopLoss, newStopLoss))
+						fmt.Sprintf("✅ %s %s 移动止损已调整 %s: 盈利%.2f%%, %.4f → %.4f (保留初始止盈: %.4f)",
+							symbol, side, stage, currentProfitPct, currentStopLoss, newStopLoss, at.positionInitialTakeProfit[posKey]))
 				}
 			}
 		}
@@ -2280,6 +2593,264 @@ func (at *AutoTrader) closeWorstPositionsToFreeMargin(requiredMargin float64, ex
 			closedCount, totalFreedMargin, requiredMargin)
 	}
 
-	log.Printf("  ✅ 成功平掉 %d 个表现较差的仓位，释放保证金: %.2f USDT", closedCount, totalFreedMargin)
-	return totalFreedMargin, nil
+        log.Printf("  ✅ 成功平掉 %d 个表现较差的仓位，释放保证金: %.2f USDT", closedCount, totalFreedMargin)                                                                                 
+        return totalFreedMargin, nil
+}
+
+// syncBinanceTrades 同步币安交易记录（启动时调用）
+func (at *AutoTrader) syncBinanceTrades() error {
+	// 只支持币安交易所
+	if at.exchange != "binance" {
+		return nil
+	}
+
+	// 尝试将trader转换为FuturesTrader以调用GetUserTrades
+	futuresTrader, ok := at.trader.(*FuturesTrader)
+	if !ok {
+		return fmt.Errorf("当前交易器不是币安期货交易器，无法同步交易记录")
+	}
+
+	// 获取所有交易过的币种（从本地记录或默认币种列表）
+	symbols := make(map[string]bool)
+	
+	// 1. 从本地交易记录中获取所有交易过的币种
+	localRecords, err := at.tradeLogger.GetTradeRecords("", 0) // 获取所有记录
+	if err == nil {
+		for _, record := range localRecords {
+			if record.Symbol != "" {
+				symbols[record.Symbol] = true
+			}
+		}
+	}
+
+	// 2. 添加默认币种列表
+	for _, coin := range at.defaultCoins {
+		if coin != "" {
+			symbols[coin] = true
+		}
+	}
+
+	// 3. 添加交易币种列表
+	for _, coin := range at.tradingCoins {
+		if coin != "" {
+			symbols[coin] = true
+		}
+	}
+
+	if len(symbols) == 0 {
+		log.Printf("  ℹ️  没有找到需要同步的币种")
+		return nil
+	}
+
+	log.Printf("  📋 开始同步 %d 个币种的交易记录...", len(symbols))
+
+	// 获取最近7天的交易记录（币安API限制最多1000条）
+	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour)
+	now := time.Now()
+
+	syncedCount := 0
+	updatedCount := 0
+	createdCount := 0
+
+	// 对每个币种获取交易记录
+	for symbol := range symbols {
+		// 获取该币种的交易记录
+		binanceTrades, err := futuresTrader.GetUserTrades(symbol, 1000, &sevenDaysAgo, &now)
+		if err != nil {
+			log.Printf("  ⚠️  获取 %s 交易记录失败: %v", symbol, err)
+			continue
+		}
+
+		if len(binanceTrades) == 0 {
+			continue
+		}
+
+		// 按时间排序（从早到晚）
+		sort.Slice(binanceTrades, func(i, j int) bool {
+			timeI, _ := binanceTrades[i]["time"].(int64)
+			timeJ, _ := binanceTrades[j]["time"].(int64)
+			return timeI < timeJ
+		})
+
+		// 按持仓方向分组处理
+		tradesByPosition := make(map[string][]map[string]interface{})
+		for _, trade := range binanceTrades {
+			positionSide, _ := trade["position_side"].(string)
+			if positionSide == "" {
+				continue
+			}
+			key := fmt.Sprintf("%s_%s", symbol, positionSide)
+			tradesByPosition[key] = append(tradesByPosition[key], trade)
+		}
+
+		// 处理每个持仓方向的交易记录
+		for posKey, trades := range tradesByPosition {
+			// 解析持仓方向
+			var side string
+			if strings.Contains(posKey, "LONG") {
+				side = "long"
+			} else if strings.Contains(posKey, "SHORT") {
+				side = "short"
+			} else {
+				continue
+			}
+
+			// 使用FIFO策略匹配开仓和平仓
+			var openTrades []map[string]interface{} // 存储开仓记录（按时间顺序）
+			
+			for _, trade := range trades {
+				tradeSide, _ := trade["side"].(string) // "BUY" or "SELL"
+				positionSide, _ := trade["position_side"].(string)
+				
+				// 判断是开仓还是平仓
+				isOpenTrade := false
+				if positionSide == "LONG" && tradeSide == "BUY" {
+					isOpenTrade = true
+				} else if positionSide == "SHORT" && tradeSide == "SELL" {
+					isOpenTrade = true
+				}
+
+				if isOpenTrade {
+					// 开仓：添加到开仓列表
+					openTrades = append(openTrades, trade)
+				} else {
+					// 平仓：匹配开仓记录
+					closePrice, _ := trade["price"].(float64)
+					closeQty, _ := trade["qty"].(float64)
+					closeOrderID, _ := trade["order_id"].(int64)
+					realizedPnl, _ := trade["realized_pnl"].(float64)
+
+					// 使用FIFO策略匹配开仓记录
+					remainingCloseQty := closeQty
+					var matchedOpenTrades []map[string]interface{}
+					
+					for i := 0; i < len(openTrades) && remainingCloseQty > 0; i++ {
+						openTrade := openTrades[i]
+						openQty, _ := openTrade["qty"].(float64)
+						
+						// 检查这个开仓记录是否已经被完全匹配
+						matchedQty, hasMatched := openTrade["matched_qty"].(float64)
+						if !hasMatched {
+							matchedQty = 0
+						}
+						
+						remainingOpenQty := openQty - matchedQty
+						if remainingOpenQty <= 0 {
+							continue
+						}
+
+						// 匹配数量
+						matched := math.Min(remainingOpenQty, remainingCloseQty)
+						matchedOpenTrades = append(matchedOpenTrades, openTrade)
+						
+						// 更新已匹配数量
+						openTrade["matched_qty"] = matchedQty + matched
+						remainingCloseQty -= matched
+					}
+
+					// 如果有匹配的开仓记录，更新本地记录
+					if len(matchedOpenTrades) > 0 && remainingCloseQty < closeQty {
+						// 计算加权平均开仓价
+						var totalOpenQty, totalOpenValue float64
+						var openTime int64 = math.MaxInt64
+						
+						for _, openTrade := range matchedOpenTrades {
+							openPrice, _ := openTrade["price"].(float64)
+							openTimeVal, _ := openTrade["time"].(int64)
+							
+							matchedQty, _ := openTrade["matched_qty"].(float64)
+							prevMatched, _ := openTrade["prev_matched_qty"].(float64)
+							actualMatched := matchedQty - prevMatched
+							
+							if actualMatched > 0 {
+								totalOpenQty += actualMatched
+								totalOpenValue += openPrice * actualMatched
+								if openTimeVal < openTime {
+									openTime = openTimeVal
+								}
+							}
+							openTrade["prev_matched_qty"] = matchedQty
+						}
+
+						if totalOpenQty > 0 {
+							avgOpenPrice := totalOpenValue / totalOpenQty
+							actualCloseQty := closeQty - remainingCloseQty
+							
+							// 检查本地是否已有对应的开仓记录
+							localOpenRecords, err := at.tradeLogger.GetTradeRecords("open", 0)
+							var localRecord *logger.TradeRecord
+							if err == nil {
+								// 查找匹配的未平仓记录（按时间顺序，最早的优先）
+								for _, record := range localOpenRecords {
+									if record.Symbol == symbol && record.Side == side {
+										if localRecord == nil || record.OpenTime.Before(localRecord.OpenTime) {
+											localRecord = record
+										}
+									}
+								}
+							}
+							
+							if localRecord != nil {
+								// 如果本地记录的开仓时间与币安记录接近（5分钟内），认为是同一笔交易
+								openTimeDiff := math.Abs(float64(localRecord.OpenTime.UnixMilli() - openTime))
+								if openTimeDiff < 5*60*1000 { // 5分钟
+									// 更新本地记录
+									closeReason := "take_profit" // 默认认为是止盈
+									if realizedPnl < 0 {
+										closeReason = "stop_loss" // 如果亏损，认为是止损
+									}
+									
+									_, err := at.tradeLogger.UpdateCloseTrade(symbol, side, closePrice, actualCloseQty, closeReason, closeOrderID)
+									if err == nil {
+										updatedCount++
+										log.Printf("  ✓ 更新 %s %s 平仓记录（价格: %.4f, 数量: %.4f, 原因: %s）", 
+											symbol, side, closePrice, actualCloseQty, closeReason)
+									}
+								} else {
+									// 时间差异太大，可能是新的交易，创建新记录
+									// 但这里我们暂时跳过，因为已经有本地记录了
+								}
+							} else {
+								// 本地没有对应的开仓记录，可能是被动平单（止损/止盈触发）
+								// 或者是在系统启动前就已经开仓的
+								// 这种情况下，我们创建一个完整的交易记录（包括开仓和平仓）
+								closeReason := "take_profit"
+								if realizedPnl < 0 {
+									closeReason = "stop_loss"
+								}
+								
+								// 估算杠杆（从realized_pnl反推）
+								estimatedLeverage := 15 // 默认15倍
+								if avgOpenPrice > 0 && closePrice > 0 {
+									priceChange := math.Abs(closePrice - avgOpenPrice) / avgOpenPrice
+									if priceChange > 0 && realizedPnl != 0 {
+										estimatedLeverage = int(math.Abs(realizedPnl / (priceChange * totalOpenQty * avgOpenPrice)))
+										if estimatedLeverage < 1 || estimatedLeverage > 125 {
+											estimatedLeverage = 15
+										}
+									}
+								}
+								
+								// 创建完整的交易记录
+								_, err := at.tradeLogger.RecordOpenTrade(symbol, side, avgOpenPrice, totalOpenQty, estimatedLeverage, 0, 0, 0)
+								if err == nil {
+									_, err = at.tradeLogger.UpdateCloseTrade(symbol, side, closePrice, actualCloseQty, closeReason, closeOrderID)
+									if err == nil {
+										createdCount++
+										log.Printf("  ✓ 创建 %s %s 完整交易记录（开仓: %.4f, 平仓: %.4f, 原因: %s）", 
+											symbol, side, avgOpenPrice, closePrice, closeReason)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		syncedCount++
+	}
+
+	log.Printf("  ✅ 同步完成：%d 个币种，更新 %d 条记录，创建 %d 条记录", syncedCount, updatedCount, createdCount)
+	return nil
 }

@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-11-26T07:06:45.60069237+08:00",
+  "cycle_number": 308,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 0,
+    "available_balance": 0,
+    "total_unrealized_profit": 0,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": null,
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "构建交易上下文失败: 获取持仓失败: 获取持仓失败: Get \"https://fapi.binance.com/fapi/v2/positionRisk?timestamp=1764112005527\u0026signature=7f97263cb1015c201515a54941c070eb04201e77ac4e135d53deba2922153203\": unexpected EOF"
+}

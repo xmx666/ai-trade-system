@@ -463,8 +463,32 @@ func (d *Database) EnsureAdminUser() error {
 		return err
 	}
 
-	// 如果已存在，直接返回
+	// 如果已存在，检查是否有AI模型和交易所配置
 	if count > 0 {
+		// 检查admin用户是否有AI模型配置
+		var modelCount int
+		d.db.QueryRow(`SELECT COUNT(*) FROM ai_models WHERE user_id = 'admin'`).Scan(&modelCount)
+		if modelCount == 0 {
+			// 尝试从default用户复制配置（保留用户之前手动配置的数据）
+			copied := d.copyModelsFromDefaultToAdmin()
+			if !copied {
+				// 如果default用户也没有配置，创建默认配置
+				d.ensureAdminAIModels()
+			}
+		}
+
+		// 检查admin用户是否有交易所配置
+		var exchangeCount int
+		d.db.QueryRow(`SELECT COUNT(*) FROM exchanges WHERE user_id = 'admin'`).Scan(&exchangeCount)
+		if exchangeCount == 0 {
+			// 尝试从default用户复制配置（保留用户之前手动配置的数据）
+			copied := d.copyExchangesFromDefaultToAdmin()
+			if !copied {
+				// 如果default用户也没有配置，创建默认配置
+				d.ensureAdminExchanges()
+			}
+		}
+
 		return nil
 	}
 
@@ -477,7 +501,127 @@ func (d *Database) EnsureAdminUser() error {
 		OTPVerified:  true,
 	}
 
-	return d.CreateUser(adminUser)
+	if err := d.CreateUser(adminUser); err != nil {
+		return err
+	}
+
+	// 为admin用户创建默认AI模型和交易所配置
+	d.ensureAdminAIModels()
+	d.ensureAdminExchanges()
+
+	return nil
+}
+
+// ensureAdminAIModels 为admin用户创建默认AI模型配置
+func (d *Database) ensureAdminAIModels() {
+	aiModels := []struct {
+		id, name, provider string
+	}{
+		{"deepseek", "DeepSeek AI", "deepseek"},
+		{"qwen", "Qwen AI", "qwen"},
+		{"claude", "Claude AI", "claude"},
+	}
+
+	for _, model := range aiModels {
+		_, err := d.db.Exec(`
+			INSERT OR IGNORE INTO ai_models (id, user_id, name, provider, enabled, api_key, custom_api_url, custom_model_name, created_at, updated_at) 
+			VALUES (?, 'admin', ?, ?, 0, '', '', '', datetime('now'), datetime('now'))
+		`, model.id, model.name, model.provider)
+		if err != nil {
+			log.Printf("⚠️ 为admin用户创建AI模型配置失败 %s: %v", model.id, err)
+		}
+	}
+}
+
+// ensureAdminExchanges 为admin用户创建默认交易所配置
+func (d *Database) ensureAdminExchanges() {
+	exchanges := []struct {
+		id, name, typ string
+	}{
+		{"binance", "Binance Futures", "binance"},
+		{"hyperliquid", "Hyperliquid", "hyperliquid"},
+		{"aster", "Aster DEX", "aster"},
+	}
+
+	for _, exchange := range exchanges {
+		_, err := d.db.Exec(`
+			INSERT OR IGNORE INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, testnet, hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key, created_at, updated_at) 
+			VALUES (?, 'admin', ?, ?, 0, '', '', 0, '', '', '', '', datetime('now'), datetime('now'))
+		`, exchange.id, exchange.name, exchange.typ)
+		if err != nil {
+			log.Printf("⚠️ 为admin用户创建交易所配置失败 %s: %v", exchange.id, err)
+		}
+	}
+}
+
+// copyModelsFromDefaultToAdmin 从default用户复制AI模型配置到admin用户
+func (d *Database) copyModelsFromDefaultToAdmin() bool {
+	rows, err := d.db.Query(`
+		SELECT id, name, provider, enabled, api_key, custom_api_url, custom_model_name
+		FROM ai_models WHERE user_id = 'default'
+	`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	copied := false
+	for rows.Next() {
+		var id, name, provider, apiKey, customAPIURL, customModelName string
+		var enabled bool
+		if err := rows.Scan(&id, &name, &provider, &enabled, &apiKey, &customAPIURL, &customModelName); err != nil {
+			continue
+		}
+
+		// 复制到admin用户
+		_, err := d.db.Exec(`
+			INSERT OR IGNORE INTO ai_models (id, user_id, name, provider, enabled, api_key, custom_api_url, custom_model_name, created_at, updated_at) 
+			VALUES (?, 'admin', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		`, id, name, provider, enabled, apiKey, customAPIURL, customModelName)
+		if err == nil {
+			copied = true
+			log.Printf("✓ 从default用户复制AI模型配置到admin: %s", id)
+		}
+	}
+
+	return copied
+}
+
+// copyExchangesFromDefaultToAdmin 从default用户复制交易所配置到admin用户
+func (d *Database) copyExchangesFromDefaultToAdmin() bool {
+	rows, err := d.db.Query(`
+		SELECT id, name, type, enabled, api_key, secret_key, testnet, 
+		       hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key
+		FROM exchanges WHERE user_id = 'default'
+	`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	copied := false
+	for rows.Next() {
+		var id, name, typ, apiKey, secretKey, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string
+		var enabled, testnet bool
+		if err := rows.Scan(&id, &name, &typ, &enabled, &apiKey, &secretKey, &testnet, 
+			&hyperliquidWalletAddr, &asterUser, &asterSigner, &asterPrivateKey); err != nil {
+			continue
+		}
+
+		// 复制到admin用户
+		_, err := d.db.Exec(`
+			INSERT OR IGNORE INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, testnet, 
+				hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key, created_at, updated_at) 
+			VALUES (?, 'admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		`, id, name, typ, enabled, apiKey, secretKey, testnet, 
+			hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey)
+		if err == nil {
+			copied = true
+			log.Printf("✓ 从default用户复制交易所配置到admin: %s", id)
+		}
+	}
+
+	return copied
 }
 
 // GetUserByEmail 通过邮箱获取用户

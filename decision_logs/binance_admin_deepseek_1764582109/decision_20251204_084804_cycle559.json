@@ -1,0 +1,27 @@
+{
+  "timestamp": "2025-12-04T08:48:04.978696337+08:00",
+  "cycle_number": 559,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 127.61418074,
+    "available_balance": 127.61418074,
+    "total_unrealized_profit": 18.614180739999995,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "HYPEUSDT",
+    "DOGEUSDT",
+    "ADAUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 读取响应失败: stream error: stream ID 3; INTERNAL_ERROR; received from peer"
+}

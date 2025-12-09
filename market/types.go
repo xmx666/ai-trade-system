@@ -16,6 +16,12 @@ type Data struct {
 	IntradaySeries    *IntradayData
 	HourlyContext     *HourlyData // 1小时时间框架数据
 	LongerTermContext *LongerTermData
+	// 新增的重要API数据
+	LongShortRatio      *LongShortRatioData // 多空持仓比
+	TopTraderRatio      *LongShortRatioData // 大户多空持仓比
+	Ticker24hr          *Ticker24hrData     // 24小时统计
+	MarkPrice           float64              // 标记价格
+	IndexPrice          float64              // 指数价格
 }
 
 // OIData Open Interest数据
@@ -99,6 +105,30 @@ type Ticker24hr struct {
 	PriceChangePercent string `json:"priceChangePercent"`
 	Volume             string `json:"volume"`
 	QuoteVolume        string `json:"quoteVolume"`
+}
+
+// LongShortRatioData 多空持仓比数据
+type LongShortRatioData struct {
+	Symbol    string  `json:"symbol"`
+	LongShort float64 `json:"longShort"` // 多空比，>1表示多头占优，<1表示空头占优
+	Period    string  `json:"period"`    // 时间周期：5m, 15m, 30m, 1h, 4h, 1d
+	Timestamp int64   `json:"timestamp"`
+}
+
+// Ticker24hrData 24小时统计数据
+type Ticker24hrData struct {
+	Symbol                string  `json:"symbol"`
+	PriceChange           float64 `json:"priceChange"`           // 24小时价格变动
+	PriceChangePercent    float64 `json:"priceChangePercent"`    // 24小时价格变动百分比
+	Volume                float64 `json:"volume"`                // 24小时成交量
+	QuoteVolume           float64 `json:"quoteVolume"`            // 24小时成交额
+	HighPrice             float64 `json:"highPrice"`             // 24小时最高价
+	LowPrice              float64 `json:"lowPrice"`              // 24小时最低价
+	TakerBuyBaseVolume    float64 `json:"takerBuyBaseVolume"`    // 24小时主动买入量
+	TakerBuyQuoteVolume   float64 `json:"takerBuyQuoteVolume"`   // 24小时主动买入成交额
+	TakerSellBaseVolume   float64 `json:"takerSellBaseVolume"`   // 24小时主动卖出量
+	TakerSellQuoteVolume  float64 `json:"takerSellQuoteVolume"` // 24小时主动卖出成交额
+	BuySellRatio          float64 `json:"buySellRatio"`           // 主动买卖比 = 主动买入量/主动卖出量
 }
 
 // 特征数据结构

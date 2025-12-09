@@ -1,0 +1,30 @@
+{
+  "timestamp": "2025-11-11T23:08:49.410069434+08:00",
+  "cycle_number": 83,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "**思维链分析：**\n\n**交易频率检查（首先，硬约束）：**\n- 今天已交易次数：4次\n- 交易频率状态：\u003c8次，可以继续寻找A级机会\n- 交易频率限制：今天最多还可交易6次（总上限10次左右）\n\n**市场环境判断：**\n- 当前整体市场环境：BTC 4小时EMA20(104562) \u003c EMA50(104898)，MACD正值但下降，整体处于震荡偏弱环境\n- 环境影响：震荡偏弱环境，需要谨慎操作，提高入场标准\n- 黑天鹅检测：当前无异常突破或成交量异常，趋势相对稳定\n\n**BTCUSDT深度分析（极度超卖反弹机会检测）：**\n\n**极度超卖确认：**\n- 3分钟RSI7 = 17.83 \u003c 20（极度超卖）✓\n- 4小时RSI14 = 51.59 \u003e 30（未进入超卖区域）✗\n- 价格已深度下跌，从105030跌至104674，跌幅0.34%\n\n**明确反弹信号：**\n- 3分钟价格：104674.90 vs EMA20(104981.55)，价格在EMA20下方\n- 3分钟RSI7从极度超卖区(17.83)开始反弹？最新RSI序列：",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 177.27322157,
+    "available_balance": 177.27322157,
+    "total_unrealized_profit": -41.726778429999996,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "HYPEUSDT",
+    "ADAUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 解析AI响应失败: 提取决策失败: JSON解析失败: json: cannot unmarshal number into Go value of type decision.Decision\nJSON内容: [22.374, 20.235, 18.435, 17.831]"
+}

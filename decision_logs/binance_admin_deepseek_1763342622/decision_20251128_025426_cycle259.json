@@ -1,0 +1,51 @@
+{
+  "timestamp": "2025-11-28T02:54:26.215799008+08:00",
+  "cycle_number": 259,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 177.1779306,
+    "available_balance": 93.28635603,
+    "total_unrealized_profit": 9.177930599999996,
+    "position_count": 2,
+    "margin_used_pct": 43.52700555573596
+  },
+  "positions": [
+    {
+      "symbol": "SOLUSDT",
+      "side": "long",
+      "position_amt": 2.4,
+      "entry_price": 141.38,
+      "mark_price": 142.80302042,
+      "unrealized_profit": 3.415249,
+      "leverage": 10,
+      "liquidation_price": 127.95245226
+    },
+    {
+      "symbol": "XRPUSDT",
+      "side": "long",
+      "position_amt": 192.5,
+      "entry_price": 2.2023,
+      "mark_price": 2.22584534,
+      "unrealized_profit": 4.53247795,
+      "leverage": 10,
+      "liquidation_price": 1.99313683
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "SOLUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "HYPEUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: 读取响应失败: stream error: stream ID 1; INTERNAL_ERROR; received from peer"
+}

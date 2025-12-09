@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-11-04T11:45:34.829658262+08:00",
+  "cycle_number": 3,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 0,
+    "available_balance": 0,
+    "total_unrealized_profit": 0,
+    "position_count": 0,
+    "margin_used_pct": 0
+  },
+  "positions": null,
+  "candidate_coins": null,
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "构建交易上下文失败: 获取账户余额失败: 获取账户信息失败: Get \"https://fapi.binance.com/fapi/v2/account?timestamp=1762227102429\u0026signature=9911c15a23e606a62536e703078c942e027e15e6a6a9577acc25f54b435ae0f5\": read tcp 172.21.0.2:52212-\u003e13.35.215.224:443: read: connection timed out"
+}

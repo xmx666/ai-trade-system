@@ -70,16 +70,56 @@ export default function AILearning({ traderId }: AILearningProps) {
   );
 
   // 获取币安真实交易记录（优先使用）
+  // 首先从performance中提取所有交易过的币种，然后为每个币种获取交易记录
   const { data: binanceTradesData } = useSWR(
-    traderId ? binanceTradesKey : null,
+    traderId && performance ? `${binanceTradesKey}-${performance.recent_trades?.length || 0}` : null,
     async () => {
-      if (!traderId) return null;
+      if (!traderId || !performance) return null;
       try {
-        // 获取所有交易对的交易记录（币安API要求指定symbol，我们获取BTCUSDT作为主要交易对）
-        const result = await api.getBinanceTrades(traderId, 'BTCUSDT', 100);
-        const trades = result.trades || [];
-        console.log('获取到币安交易记录:', trades.length, '条');
-        return trades;
+        // 从performance.recent_trades中提取所有交易过的币种
+        const symbolsSet = new Set<string>();
+        if (performance?.recent_trades && performance.recent_trades.length > 0) {
+          // TypeScript类型保护：在if块内performance肯定不是undefined
+          const recentTrades = performance.recent_trades;
+          recentTrades.forEach((trade: TradeOutcome) => {
+            if (trade.symbol) {
+              symbolsSet.add(trade.symbol);
+            }
+          });
+        }
+        
+        // 如果没有从recent_trades中获取到币种，使用默认币种列表
+        const symbols = Array.from(symbolsSet);
+        if (symbols.length === 0) {
+          // 使用常见的交易币种
+          symbols.push('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'HYPEUSDT');
+        }
+        
+        console.log('需要获取交易记录的币种:', symbols);
+        
+        // 为每个币种获取交易记录（并行请求）
+        const allTradesPromises = symbols.map(symbol => 
+          api.getBinanceTrades(traderId, symbol, 500).catch(err => {
+            console.warn(`获取 ${symbol} 交易记录失败:`, err);
+            return { trades: [] };
+          })
+        );
+        
+        const allTradesResults = await Promise.all(allTradesPromises);
+        
+        // 合并所有币种的交易记录
+        const allTrades: any[] = [];
+        allTradesResults.forEach(result => {
+          if (result && result.trades && Array.isArray(result.trades)) {
+            allTrades.push(...result.trades);
+          }
+        });
+        
+        // 按时间排序（从早到晚，便于后续处理）
+        allTrades.sort((a, b) => (a.time || 0) - (b.time || 0));
+        
+        console.log('获取到币安交易记录总数:', allTrades.length, '条，涉及币种:', symbols.length, '个');
+        return allTrades;
       } catch (err) {
         console.error('获取币安交易记录失败:', err);
         return null;
@@ -119,7 +159,9 @@ export default function AILearning({ traderId }: AILearningProps) {
         });
 
         // 再添加新的记录（会覆盖旧的）
-        performance.recent_trades.forEach((trade: TradeOutcome) => {
+        // TypeScript类型保护：在if块内performance肯定不是undefined
+        const recentTrades = performance.recent_trades;
+        recentTrades.forEach((trade: TradeOutcome) => {
           if (trade.close_time) {
             tradesMap.set(trade.close_time, trade);
           }
@@ -183,37 +225,45 @@ export default function AILearning({ traderId }: AILearningProps) {
                             (positionSide === 'SHORT' && trade.side === 'BUY');
         
         if (isOpenTrade) {
-          // 开仓：累积数量
-          openTrades.push(trade);
-        } else if (isCloseTrade && openTrades.length > 0) {
-          // 平仓：匹配开仓记录
-          // 使用加权平均价格计算开仓价
+          // 开仓：累积数量，记录剩余数量用于FIFO匹配
+          openTrades.push({ ...trade, remainingQty: trade.qty });
+        } else if (isCloseTrade) {
+          // 平仓：使用FIFO策略匹配开仓记录
+          let remainingCloseQty = trade.qty;
+          let matchedOpenTrades: any[] = [];
           let totalOpenQty = 0;
           let totalOpenValue = 0;
           let totalOpenCommission = 0;
           
-          openTrades.forEach(ot => {
-            totalOpenQty += ot.qty;
-            totalOpenValue += ot.price * ot.qty;
-            totalOpenCommission += ot.commission || 0;
-          });
+          // FIFO匹配：从最早的开仓记录开始匹配
+          for (let j = 0; j < openTrades.length && remainingCloseQty > 0; j++) {
+            const openTrade = openTrades[j];
+            if (openTrade.remainingQty <= 0) continue;
+            
+            const matchedQty = Math.min(openTrade.remainingQty, remainingCloseQty);
+            matchedOpenTrades.push({ ...openTrade, matchedQty });
+            totalOpenQty += matchedQty;
+            totalOpenValue += openTrade.price * matchedQty;
+            totalOpenCommission += (openTrade.commission || 0) * (matchedQty / openTrade.qty);
+            
+            openTrade.remainingQty -= matchedQty;
+            remainingCloseQty -= matchedQty;
+          }
           
-          const avgOpenPrice = totalOpenQty > 0 ? totalOpenValue / totalOpenQty : 0;
-          const closePrice = trade.price;
-          const closeQty = trade.qty;
-          const closeCommission = trade.commission || 0;
-          const realizedPnl = trade.realized_pnl || 0;
-          
-          // 计算实际使用的数量（取开仓和平仓的最小值）
-          const actualQty = Math.min(totalOpenQty, closeQty);
-          
-          if (actualQty > 0 && avgOpenPrice > 0 && closePrice > 0) {
+          // 如果有匹配的开仓记录，创建交易记录
+          if (matchedOpenTrades.length > 0 && totalOpenQty > 0) {
+            const avgOpenPrice = totalOpenValue / totalOpenQty;
+            const closePrice = trade.price;
+            const closeQty = trade.qty - remainingCloseQty; // 实际平仓数量
+            const closeCommission = (trade.commission || 0) * (closeQty / trade.qty);
+            const realizedPnl = (trade.realized_pnl || 0) * (closeQty / trade.qty);
+            
             const side = positionSide === 'LONG' ? 'long' : 'short';
             const totalCommission = totalOpenCommission + closeCommission;
             const netPnl = realizedPnl - totalCommission;
             
             // 计算持仓时长（使用最早的开仓时间和平仓时间）
-            const openTime = new Date(Math.min(...openTrades.map(ot => ot.time)));
+            const openTime = new Date(Math.min(...matchedOpenTrades.map(ot => ot.time)));
             const closeTime = new Date(trade.time);
             const durationMs = Math.max(0, closeTime.getTime() - openTime.getTime());
             const hours = Math.floor(durationMs / (1000 * 60 * 60));
@@ -222,18 +272,24 @@ export default function AILearning({ traderId }: AILearningProps) {
             const duration = hours > 0 ? `${hours}小时${minutes}分` : minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`;
             
             // 计算盈亏百分比（基于保证金）
-            const positionValue = avgOpenPrice * actualQty;
+            const positionValue = avgOpenPrice * closeQty;
             // 从realized_pnl反推杠杆倍数（如果可能）
-            const estimatedLeverage = realizedPnl !== 0 && avgOpenPrice !== closePrice 
-              ? Math.abs(realizedPnl / ((closePrice - avgOpenPrice) * actualQty * (side === 'long' ? 1 : -1)))
-              : 15; // 默认15倍杠杆
+            let estimatedLeverage = 15; // 默认15倍杠杆
+            if (realizedPnl !== 0 && avgOpenPrice !== closePrice) {
+              const priceDiff = side === 'long' ? (closePrice - avgOpenPrice) : (avgOpenPrice - closePrice);
+              if (priceDiff !== 0) {
+                estimatedLeverage = Math.abs(realizedPnl / (priceDiff * closeQty));
+                // 限制杠杆倍数在合理范围内（1-100倍）
+                estimatedLeverage = Math.max(1, Math.min(100, estimatedLeverage));
+              }
+            }
             const marginUsed = positionValue / estimatedLeverage;
             const pnlPct = marginUsed > 0 ? (netPnl / marginUsed) * 100 : 0;
             
             convertedTrades.push({
               symbol: trade.symbol,
               side,
-              quantity: actualQty,
+              quantity: closeQty,
               leverage: Math.round(estimatedLeverage),
               open_price: avgOpenPrice,
               close_price: closePrice,
@@ -248,21 +304,10 @@ export default function AILearning({ traderId }: AILearningProps) {
               close_time: closeTime.toISOString(),
               was_stop_loss: false, // 币安API不直接提供止损信息
             });
-            
-            // 减少已匹配的开仓数量
-            let remainingQty = closeQty;
-            openTrades = openTrades.filter(ot => {
-              if (remainingQty <= 0) return true;
-              if (ot.qty <= remainingQty) {
-                remainingQty -= ot.qty;
-                return false;
-              } else {
-                ot.qty -= remainingQty;
-                remainingQty = 0;
-                return true;
-              }
-            });
           }
+          
+          // 清理已完全匹配的开仓记录
+          openTrades = openTrades.filter(ot => ot.remainingQty > 0);
         }
       }
     });
@@ -275,7 +320,7 @@ export default function AILearning({ traderId }: AILearningProps) {
     return convertedTrades;
   }, [binanceTradesData]);
 
-  // 合并API数据和localStorage数据（优先使用币安真实数据）
+  // 合并API数据和localStorage数据（优先使用币安真实数据，但合并所有数据源）
   const mergedPerformance = useMemo(() => {
     try {
       const saved = localStorage.getItem(storageKey);
@@ -289,133 +334,116 @@ export default function AILearning({ traderId }: AILearningProps) {
         }
       }
 
-      // 优先使用币安真实交易数据
-      if (convertedBinanceTrades && convertedBinanceTrades.length > 0) {
-        // 使用币安真实数据，合并performance的其他统计信息
-        const binanceTrades = convertedBinanceTrades;
-        const winningTrades = binanceTrades.filter(t => (t.net_pn_l ?? t.pn_l) >= 0);
-        const losingTrades = binanceTrades.filter(t => (t.net_pn_l ?? t.pn_l) < 0);
-        const winCount = winningTrades.length;
-        const lossCount = losingTrades.length;
-        
-        const avgWin = winCount > 0 
-          ? winningTrades.reduce((sum, t) => sum + (t.net_pn_l ?? t.pn_l), 0) / winCount 
-          : 0;
-        const avgLoss = lossCount > 0 
-          ? losingTrades.reduce((sum, t) => sum + (t.net_pn_l ?? t.pn_l), 0) / lossCount 
-          : 0;
-        
-        return {
-          ...(performance || {}),
-          total_trades: binanceTrades.length,
-          winning_trades: winCount,
-          losing_trades: lossCount,
-          win_rate: binanceTrades.length > 0 ? (winCount / binanceTrades.length) * 100 : 0,
-          avg_win: avgWin,
-          avg_loss: avgLoss,
-          profit_factor: lossCount > 0 && winCount > 0 && avgLoss !== 0
-            ? avgWin / Math.abs(avgLoss)
-            : 0,
-          recent_trades: binanceTrades,
-        } as PerformanceAnalysis;
-      }
-
-      // 如果API返回了数据，使用API数据；否则使用保存的数据
-      if (performance) {
-        const apiTrades = performance.recent_trades || [];
-        
-        if (apiTrades.length > 0) {
-          // API有数据，使用API数据（已经在useEffect中保存到localStorage）
-          return performance;
-        } else if (savedTrades.length > 0) {
-          // API没有数据但localStorage有，使用localStorage的数据
-          return {
-            ...performance,
-            recent_trades: savedTrades,
-          };
+      // 合并所有数据源：币安数据 + performance数据 + localStorage数据
+      const allTradesMap = new Map<string, TradeOutcome>();
+      
+      // 1. 先添加localStorage数据（作为基础）
+      savedTrades.forEach(trade => {
+        if (trade.close_time) {
+          allTradesMap.set(trade.close_time, trade);
         }
-        return performance;
-      } else if (savedTrades.length > 0) {
-        // 如果API还没有数据，但localStorage有数据，返回一个临时的performance对象
-        // 注意：这只是一个占位符，用于显示历史交易记录
-        // 使用 net_pn_l（净盈亏）而不是 pn_l（毛盈亏）来计算统计
-        const winningTrades = savedTrades.filter(t => (t.net_pn_l ?? t.pn_l) >= 0);
-        const losingTrades = savedTrades.filter(t => (t.net_pn_l ?? t.pn_l) < 0);
-        const winCount = winningTrades.length;
-        const lossCount = losingTrades.length;
-        
-        // 计算各币种的统计
-        const symbolMap = new Map<string, { total: number; wins: number; pnl: number }>();
-        savedTrades.forEach(trade => {
-          const netPnl = trade.net_pn_l ?? trade.pn_l;  // 优先使用净盈亏
-          const existing = symbolMap.get(trade.symbol) || { total: 0, wins: 0, pnl: 0 };
-          symbolMap.set(trade.symbol, {
-            total: existing.total + 1,
-            wins: existing.wins + (netPnl >= 0 ? 1 : 0),
-            pnl: existing.pnl + netPnl,
-          });
-        });
-        
-        const symbolStats: { [key: string]: SymbolPerformance } = {};
-        symbolMap.forEach((stats, symbol) => {
-          symbolStats[symbol] = {
-            symbol,
-            total_trades: stats.total,
-            winning_trades: stats.wins,
-            losing_trades: stats.total - stats.wins,
-            win_rate: (stats.wins / stats.total) * 100,
-            total_pn_l: stats.pnl,
-            avg_pn_l: stats.pnl / stats.total,
-          };
-        });
-        
-        // 找到最佳和最差币种
-        let bestSymbol: string | undefined;
-        let worstSymbol: string | undefined;
-        let bestPnl = -Infinity;
-        let worstPnl = Infinity;
-        
-        symbolMap.forEach((stats, symbol) => {
-          if (stats.pnl > bestPnl) {
-            bestPnl = stats.pnl;
-            bestSymbol = symbol;
-          }
-          if (stats.pnl < worstPnl) {
-            worstPnl = stats.pnl;
-            worstSymbol = symbol;
+      });
+      
+      // 2. 添加performance数据（覆盖localStorage中相同时间的记录）
+      if (performance?.recent_trades) {
+        // TypeScript类型保护：在if块内performance肯定不是undefined
+        const recentTrades = performance.recent_trades;
+        recentTrades.forEach(trade => {
+          if (trade.close_time) {
+            allTradesMap.set(trade.close_time, trade);
           }
         });
-        
-        // 计算平均盈利和平均亏损（使用净盈亏）
-        const avgWin = winCount > 0 
-          ? winningTrades.reduce((sum, t) => sum + (t.net_pn_l ?? t.pn_l), 0) / winCount 
-          : 0;
-        const avgLoss = lossCount > 0 
-          ? losingTrades.reduce((sum, t) => sum + (t.net_pn_l ?? t.pn_l), 0) / lossCount 
-          : 0;
-        
-        return {
-          total_trades: savedTrades.length,
-          winning_trades: winCount,
-          losing_trades: lossCount,
-          win_rate: savedTrades.length > 0 ? (winCount / savedTrades.length) * 100 : 0,
-          avg_win: avgWin,
-          avg_loss: avgLoss,
-          profit_factor: lossCount > 0 && winCount > 0 && avgLoss !== 0
-            ? avgWin / Math.abs(avgLoss)
-            : 0,
-          sharpe_ratio: 0, // 需要更多数据才能计算夏普比率
-          recent_trades: savedTrades,
-          symbol_stats: symbolStats,
-          best_symbol: bestSymbol,
-          worst_symbol: worstSymbol,
-        } as PerformanceAnalysis;
       }
+      
+      // 3. 优先使用币安真实数据（覆盖前两者的记录）
+      if (convertedBinanceTrades && convertedBinanceTrades.length > 0) {
+        convertedBinanceTrades.forEach(trade => {
+          if (trade.close_time) {
+            allTradesMap.set(trade.close_time, trade);
+          }
+        });
+      }
+      
+      // 转换为数组并按close_time降序排序（最新的在前）
+      const mergedTrades = Array.from(allTradesMap.values()).sort((a, b) => {
+        const timeA = new Date(a.close_time).getTime();
+        const timeB = new Date(b.close_time).getTime();
+        return timeB - timeA;
+      });
+      
+      // 计算统计信息
+      const winningTrades = mergedTrades.filter(t => (t.net_pn_l ?? t.pn_l) >= 0);
+      const losingTrades = mergedTrades.filter(t => (t.net_pn_l ?? t.pn_l) < 0);
+      const winCount = winningTrades.length;
+      const lossCount = losingTrades.length;
+      
+      const avgWin = winCount > 0 
+        ? winningTrades.reduce((sum, t) => sum + (t.net_pn_l ?? t.pn_l), 0) / winCount 
+        : 0;
+      const avgLoss = lossCount > 0 
+        ? losingTrades.reduce((sum, t) => sum + (t.net_pn_l ?? t.pn_l), 0) / lossCount 
+        : 0;
+      
+      // 计算各币种的统计
+      const symbolMap = new Map<string, { total: number; wins: number; pnl: number }>();
+      mergedTrades.forEach(trade => {
+        const netPnl = trade.net_pn_l ?? trade.pn_l;
+        const existing = symbolMap.get(trade.symbol) || { total: 0, wins: 0, pnl: 0 };
+        symbolMap.set(trade.symbol, {
+          total: existing.total + 1,
+          wins: existing.wins + (netPnl >= 0 ? 1 : 0),
+          pnl: existing.pnl + netPnl,
+        });
+      });
+      
+      const symbolStats: { [key: string]: SymbolPerformance } = {};
+      let bestSymbol: string | undefined;
+      let worstSymbol: string | undefined;
+      let bestPnl = -Infinity;
+      let worstPnl = Infinity;
+      
+      symbolMap.forEach((stats, symbol) => {
+        symbolStats[symbol] = {
+          symbol,
+          total_trades: stats.total,
+          winning_trades: stats.wins,
+          losing_trades: stats.total - stats.wins,
+          win_rate: (stats.wins / stats.total) * 100,
+          total_pn_l: stats.pnl,
+          avg_pn_l: stats.pnl / stats.total,
+        };
+        
+        if (stats.pnl > bestPnl) {
+          bestPnl = stats.pnl;
+          bestSymbol = symbol;
+        }
+        if (stats.pnl < worstPnl) {
+          worstPnl = stats.pnl;
+          worstSymbol = symbol;
+        }
+      });
+      
+      return {
+        ...(performance || {}),
+        total_trades: mergedTrades.length,
+        winning_trades: winCount,
+        losing_trades: lossCount,
+        win_rate: mergedTrades.length > 0 ? (winCount / mergedTrades.length) * 100 : 0,
+        avg_win: avgWin,
+        avg_loss: avgLoss,
+        profit_factor: lossCount > 0 && winCount > 0 && avgLoss !== 0
+          ? avgWin / Math.abs(avgLoss)
+          : 0,
+        recent_trades: mergedTrades,
+        symbol_stats: symbolStats,
+        best_symbol: bestSymbol,
+        worst_symbol: worstSymbol,
+      } as PerformanceAnalysis;
     } catch (e) {
       console.error('Failed to merge performance data:', e);
     }
 
-    return performance;
+    return performance || undefined;
   }, [performance, storageKey, convertedBinanceTrades]);
 
   if (error) {
@@ -486,7 +514,7 @@ export default function AILearning({ traderId }: AILearningProps) {
               {t('aiLearning', language)}
             </h2>
             <p className="text-base" style={{ color: '#A78BFA' }}>
-              {t('tradesAnalyzed', language, { count: displayPerformance.total_trades })}
+              {t('tradesAnalyzed', language, { count: displayPerformance?.total_trades || 0 })}
             </p>
           </div>
         </div>
@@ -509,7 +537,7 @@ export default function AILearning({ traderId }: AILearningProps) {
               {t('totalTrades', language)}
             </div>
             <div className="text-4xl font-bold mono mb-1" style={{ color: '#E0E7FF' }}>
-              {displayPerformance.total_trades}
+              {displayPerformance?.total_trades || 0}
             </div>
             <div className="text-xs flex items-center gap-1" style={{ color: '#6366F1' }}>
               <BarChart3 className="w-3 h-3" /> Trades

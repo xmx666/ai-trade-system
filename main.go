@@ -10,11 +10,13 @@ import (
 	"nofx/manager"
 	"nofx/market"
 	"nofx/pool"
+	"nofx/predictor"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // LeverageConfig 杠杆配置
@@ -266,6 +268,51 @@ func main() {
 	// 启动流行情数据 - 默认使用所有交易员设置的币种 如果没有设置币种 则优先使用系统默认
 	go market.NewWSMonitor(150).Start(database.GetCustomCoins())
 	//go market.NewWSMonitor(150).Start([]string{}) //这里是一个使用方式 传入空的话 则使用market市场的所有币种
+	
+	// 启动krnos预测服务
+	log.Println("🔮 初始化krnos预测服务...")
+	// 获取需要预测的币种列表（使用默认币种或自定义币种）
+	predictionCoins := defaultCoins
+	if customCoins := database.GetCustomCoins(); len(customCoins) > 0 {
+		predictionCoins = customCoins
+	}
+	// 如果币种列表为空，至少预测BTC和ETH
+	if len(predictionCoins) == 0 {
+		predictionCoins = []string{"BTCUSDT", "ETHUSDT"}
+	}
+	
+	// 创建并启动预测调度器（后台运行，立即执行第一次预测）
+	// 使用defer recover确保预测调度器启动失败不影响主系统
+	var predictionScheduler *predictor.PredictionScheduler
+	predictionScheduler = predictor.NewPredictionScheduler(predictionCoins)
+	go func() {
+		// 顶层recover，确保预测调度器启动失败不影响主系统
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️  krnos预测调度器启动失败（已恢复，不影响主系统）: %v", r)
+			}
+		}()
+		
+		// 等待市场数据就绪（给WebSocket一些时间连接）
+		time.Sleep(5 * time.Second)
+		
+		// 启动预测调度器（如果失败只记录日志，不影响主系统）
+		if err := func() (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("panic: %v", r)
+				}
+			}()
+			predictionScheduler.Start()
+			return nil
+		}(); err != nil {
+			log.Printf("⚠️  krnos预测调度器启动失败（不影响主系统）: %v", err)
+		}
+	}()
+	log.Printf("✓ krnos预测服务已启动，监控币种: %v", predictionCoins)
+	log.Println("   首次预测将在5秒后执行，之后每30分钟更新一次")
+	log.Println("   注意：即使预测服务失败，也不会影响主系统运行")
+	
 	// 设置优雅退出
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -277,7 +324,14 @@ func main() {
 	<-sigChan
 	fmt.Println()
 	fmt.Println()
-	log.Println("📛 收到退出信号，正在停止所有trader...")
+	log.Println("📛 收到退出信号，正在停止所有服务...")
+	
+	// 停止预测调度器
+	if predictionScheduler != nil {
+		predictionScheduler.Stop()
+	}
+	
+	// 停止所有trader
 	traderManager.StopAll()
 
 	fmt.Println()

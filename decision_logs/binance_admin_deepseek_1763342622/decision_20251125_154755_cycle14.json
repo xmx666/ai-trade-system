@@ -1,0 +1,51 @@
+{
+  "timestamp": "2025-11-25T15:47:55.089717365+08:00",
+  "cycle_number": 14,
+  "system_prompt": "",
+  "input_prompt": "",
+  "cot_trace": "",
+  "decision_json": "",
+  "account_state": {
+    "total_balance": 188.80971867,
+    "available_balance": 2.42576309,
+    "total_unrealized_profit": 20.809718669999995,
+    "position_count": 2,
+    "margin_used_pct": 90.64115473090793
+  },
+  "positions": [
+    {
+      "symbol": "ETHUSDT",
+      "side": "long",
+      "position_amt": 0.58,
+      "entry_price": 2914.85087931,
+      "mark_price": 2914.74584496,
+      "unrealized_profit": -0.06091992,
+      "leverage": 15,
+      "liquidation_price": 2699.63047949
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "position_amt": 0.01,
+      "entry_price": 87936.8,
+      "mark_price": 87653.70486232,
+      "unrealized_profit": -2.83095137,
+      "leverage": 15,
+      "liquidation_price": 82448.10720281
+    }
+  ],
+  "candidate_coins": [
+    "BTCUSDT",
+    "SOLUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "HYPEUSDT"
+  ],
+  "decisions": null,
+  "execution_log": [],
+  "success": false,
+  "error_message": "获取AI决策失败: 调用AI API失败: API返回错误 (status 500): {\"error\":{\"message\":\"Internal Server Error\",\"type\":\"internal_error\",\"param\":null,\"code\":\"invalid_request_error\"}}"
+}
