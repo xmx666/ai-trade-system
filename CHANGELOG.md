@@ -17,10 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Architecture documentation with system design details
 - User guides with FAQ and troubleshooting
 - Community documentation with bounty programs
+- **Decision Reflection Pass**: 第二轮反思机制，检查第一次决策的正确性
+- **交易分析脚本** `scripts/analyze_all_trades.py`：分析已平仓交易、平仓后价格走势、匹配决策日志
+- **RECENT_UPDATES.md**：近期更新汇总文档
 
 ### Changed
 - Reorganized documentation structure into logical categories
 - Updated all README files with proper navigation links
+- **前端**：DecisionCard 保留 Input Prompt（可折叠）、后端不可用显示「启动中」并支持重试、删除 LandingPage
+- **策略 Prompt**：多空方向一致性（转多先平空、转空先平多）、趋势策略定位、行业常识
+- **decision/engine.go**：增加反思 pass、基本处理逻辑与常识
 
 ---
 

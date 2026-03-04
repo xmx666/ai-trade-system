@@ -12,6 +12,8 @@
 
 **📚 Documentation:** [Docs Home](docs/README.md) | [Getting Started](docs/getting-started/README.md) | [Changelog](CHANGELOG.md) | [Contributing](CONTRIBUTING.md) | [Security](SECURITY.md)
 
+**🤖 大模型/开发者:** [项目架构与修改指南](docs/ARCHITECTURE_FOR_LLM.md) - 目录结构、启动方式、存储、调用流程、常见修改点
+
 ---
 
 ## 📖 项目简介
@@ -29,6 +31,8 @@
 - **🔍 历史数据分析**: 支持使用外部工具深度分析交易表现
 
 ### 🆕 最新更新
+
+> 📋 **近期更新汇总**：详见 [RECENT_UPDATES.md](RECENT_UPDATES.md)（前端、策略 Prompt、决策反思、交易分析脚本等）
 
 #### 📊 历史交易详情集成 (v2.1.0)
 
@@ -114,6 +118,8 @@
    - 创建交易员并开始交易
 
 详细文档请参考：[快速开始指南](docs/getting-started/README.zh-CN.md)
+
+**WSL 本地运行**：若从 Docker 迁移到 WSL，可使用 `./start_wsl.sh start` 一键启动，详见 [WSL 本地运行指南](docs/getting-started/wsl-local.zh-CN.md)。
 
 ### 📈 核心策略
 
